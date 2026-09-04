@@ -1,0 +1,103 @@
+# yampnet
+
+The netplay plugin for [YAMP](https://github.com/biggestsonicfan/YAMP) — a single
+`yampnet.dll` that adds online play to the Sega arcade boards YAMP hosts, and that YAMP works
+perfectly well without.
+
+It lives in its own repository for the same reason it is a DLL rather than a static library: the
+netcode is expected to churn long after the emulator half is stable, and a YAMP release must be
+able to ship with no netplay in it at all. YAMP never links against this. It `LoadLibrary`s the
+DLL at runtime and disables the feature when it is missing or refuses to load, so *not shipping
+`yampnet.dll`* is the entire "exclude netplay" switch.
+
+## What it does
+
+Matchmaking runs over [**RPCN**](https://github.com/RipleyTom/rpcn), the community server for
+PlayStation Network emulation: a TLS session for login and the room list, a UDP address-discovery
+exchange, and then **direct peer-to-peer game traffic that never passes through the server**.
+Rooms carry per-game settings owned by the host, optional passwords, and join-by-ID.
+
+Two netcodes, chosen per game by what the board actually needs:
+
+* **Delay-based lockstep** (`Lockstep.cpp`, `PadCodec.cpp`) for the fighting games, modelled on
+  the Sonic the Fighters PS3 port (NPUB30927): inputs keyed by absolute frame into per-player
+  rings, every packet redundantly re-carrying the last N frames so loss repairs itself, a round
+  start barrier, an adjustable frame delay, and one shared match seed so both peers' RNG streams
+  agree.
+* **The arcade's own linked-cabinet protocol**, tunnelled as raw datagrams, for the games that
+  were designed as two machines with a comm board between them. No lockstep and no shared seed —
+  the boards talk to each other the way they did in the arcade.
+
+| Layer | Files |
+| --- | --- |
+| Plugin ABI entry points | `source/Plugin.cpp` |
+| Lockstep engine | `source/Lockstep.{h,cpp}` |
+| Pad encode/decode (the determinism rule) | `source/PadCodec.{h,cpp}` |
+| RPCN client — login, rooms, signaling | `source/RpcnClient.{h,cpp}`, `source/RpcnTransport.{h,cpp}` |
+| RPCN's protobuf wire format | `source/Protobuf.{h,cpp}` |
+| Schannel TLS | `source/TlsClient.{h,cpp}` |
+| Plain UDP fallback for LAN testing | `source/Transport.{h,cpp}` |
+
+## Building
+
+This needs a YAMP checkout for its headers — see below — and then:
+
+```
+premake5.exe --yamp-dir="../YAMP/source" vs2022
+msbuild build/YampNet.sln -p:Configuration="Release Win64" -p:Platform=x64 -m
+```
+
+C++17, Visual Studio 2022, `Debug` / `Release` / `Master` on the `Win64` platform. The output is
+`build/bin/Win64/<config>/yampnet.dll`; **copy it next to `YAMP.exe`**, which is where YAMP's
+loader looks.
+
+`premake5.lua` is the source of truth for the project files. Do not hand-edit anything under
+`build/`; edit the Lua and regenerate.
+
+## What it needs from YAMP
+
+Three headers, resolved through an include path rather than vendored here:
+
+| Header | What it is |
+| --- | --- |
+| `source/net/YampNet.h` | the plugin ABI — the whole contract between the two halves |
+| `source/pxd/LJ/sl.h` (+ `pxd_types.h`, `sl_internal.h`) | the engine's pad struct |
+| `source/m2ftg/m2ftg.h` | the arcade `execute_info` block |
+
+The plugin writes `execute_info.pad[]` itself — a deliberate scope choice — so it is coupled to
+those layouts. Copying them into this repository would let the two drift silently; pointing at a
+checkout means a rebuild picks the change up immediately.
+
+Point premake at YAMP's `source/` directory, in this order of precedence:
+
+1. `premake5 --yamp-dir="C:/src/YAMP/source" vs2022`
+2. the `YAMP_DIR` environment variable
+3. `../YAMP/source` — the default, a sibling checkout
+
+If none of those contains `net/YampNet.h`, premake stops with a message naming what it looked for,
+rather than letting the failure surface as a missing include three minutes into a compile.
+
+### The layout handshake
+
+Because the coupling above is real, `YampNet.h` carries a `yampnet_layout` struct: the host
+declares the struct sizes and field offsets it was built with, the plugin compares them against
+its own, and a mismatch is refused cleanly at load time. That is the backstop for the case where
+only one of the two halves got rebuilt — without it, a stale plugin would write pad bytes at the
+wrong offsets into the emulator's memory. Keep it honest when either layout changes.
+
+`YAMPNET_ABI_VERSION` is checked the same way, and is currently **10**.
+
+## History
+
+This code was part of YAMP (under `plugin/yampnet/`) until it was split out into this repository;
+its commit history came with it.
+
+## On the use of AI in this project
+
+Effectively all of it, as with YAMP itself: the netcode, the RPCN client, the TLS layer and the
+documentation were written in [Claude Code](https://claude.com/claude-code) sessions, mostly
+Claude Opus 5. The commit history carries `Co-Authored-By: Claude` trailers where that applies.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Same licence as YAMP, whose copyright line it carries forward.
