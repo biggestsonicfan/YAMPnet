@@ -38,14 +38,49 @@ Two netcodes, chosen per game by what the board actually needs:
 | Schannel TLS | `source/TlsClient.{h,cpp}` |
 | Plain UDP fallback for LAN testing | `source/Transport.{h,cpp}` |
 
+## Getting a build
+
+You do not have to build the plugin yourself. Every push to `master` is compiled by GitHub Actions
+against a YAMP checkout and the DLL is attached to the run:
+
+1. Open the [**Actions**](https://github.com/biggestsonicfan/YAMPnet/actions) tab.
+2. Click the newest **build** run with a green tick. A red cross means that commit did not
+   compile — take the newest green run below it instead.
+3. Scroll to **Artifacts** at the bottom of the run summary and download **`yampnet-Release`**.
+
+Unzip it and put `yampnet.dll` **beside `YAMP.exe`**. That is the only place YAMP looks, on
+purpose — the loader does not search `PATH`, so a stray copy elsewhere on the system can never be
+picked up instead. Restart YAMP; the **Netplay** settings page reports whether it loaded, and says
+so plainly if it did not.
+
+`yampnet-Debug` is the same commit built unoptimized, worth taking only when chasing a netplay
+bug. The `.pdb` in either zip is not needed to play — it carries the symbols that turn a crash
+address into a function name and line number.
+
+Two GitHub facts, neither of them a setting in this repository: you must be **signed in** to
+download an artifact even though this repository is public, and artifacts are **deleted after 90
+days**, after which the run is still listed but its downloads are gone.
+
+### Match it to your YAMP
+
+A plugin and a YAMP build from wildly different dates may refuse to work together, and that is the
+[layout handshake](#the-layout-handshake) doing its job rather than a bug: the plugin writes the
+emulator's pad structures itself, so YAMP rejects one compiled against layouts that no longer
+match. You will not be left guessing — the Netplay page says *"The plugin was found but rejected"*
+and names the reason. Take a newer DLL, or a YAMP build from nearer the plugin's date.
+
 ## Building
 
 This needs a YAMP checkout for its headers — see below — and then:
 
 ```
 premake5.exe --yamp-dir="../YAMP/source" vs2022
-msbuild build/YampNet.sln -p:Configuration="Release Win64" -p:Platform=x64 -m
+msbuild build/YampNet.vcxproj -p:Configuration="Release Win64" -p:Platform=x64 -m
 ```
+
+Note the `.vcxproj`, not the `.sln`: premake maps the `Release`/`Win64` **solution** configuration
+onto a `Release Win64`/x64 **project** one, and MSBuild wants the project's names. Handing the
+solution `Release Win64` fails with "the specified solution configuration is invalid".
 
 C++17, Visual Studio 2022, `Debug` / `Release` / `Master` on the `Win64` platform. The output is
 `build/bin/Win64/<config>/yampnet.dll`; **copy it next to `YAMP.exe`**, which is where YAMP's
