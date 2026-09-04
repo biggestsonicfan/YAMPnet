@@ -32,21 +32,35 @@ newoption {
 }
 
 local function resolve_yamp_dir()
-	local candidates = { _OPTIONS["yamp-dir"], os.getenv("YAMP_DIR"), "../YAMP/source" }
-	for _, dir in ipairs(candidates) do
-		if dir and os.isfile(dir .. "/net/YampNet.h") then
-			return dir
-		end
+	-- Precedence: the explicit option, then the environment, then a sibling checkout. The first of
+	-- these that is SET is the one used, and a set-but-wrong path is a hard error rather than a
+	-- fall-through to the next candidate: silently building against a different YAMP tree than the
+	-- one you named is worse than not building at all.
+	--
+	-- Written as a plain if-chain on purpose. This started life as a { option, env, default } list
+	-- walked with ipairs, which stops at the first nil - so with no --yamp-dir passed the list was
+	-- empty and every fallback was unreachable. There is no list here to get that wrong again.
+	local origin, dir
+
+	if _OPTIONS["yamp-dir"] and _OPTIONS["yamp-dir"] ~= "" then
+		origin, dir = "--yamp-dir", _OPTIONS["yamp-dir"]
+	elseif os.getenv("YAMP_DIR") and os.getenv("YAMP_DIR") ~= "" then
+		origin, dir = "$YAMP_DIR", os.getenv("YAMP_DIR")
+	else
+		origin, dir = "the default sibling checkout", "../YAMP/source"
 	end
 
-	-- Fail here rather than at the first #include: a premake-time error can say WHICH file was
-	-- looked for and HOW to point it somewhere else, which "cannot open source file YampNet.h"
-	-- three minutes into a compile cannot.
-	error("could not find YAMP's source/ directory (looked for net/YampNet.h under: "
-		.. table.concat({ _OPTIONS["yamp-dir"] or "--yamp-dir unset",
-						  os.getenv("YAMP_DIR") or "$YAMP_DIR unset",
-						  "../YAMP/source" }, ", ")
-		.. ").\nPass --yamp-dir=<path to YAMP/source> or set the YAMP_DIR environment variable.")
+	-- Fail here rather than at the first #include: a premake-time error can say WHICH path was
+	-- tried and WHERE it came from, which "cannot open source file YampNet.h" three minutes into
+	-- a compile cannot.
+	if not os.isfile(dir .. "/net/YampNet.h") then
+		error("could not find YAMP's source/ directory: " .. origin .. " points at '" .. dir
+			.. "', which contains no net/YampNet.h.\n"
+			.. "Pass --yamp-dir=<path to YAMP/source>, set the YAMP_DIR environment variable, or "
+			.. "check YAMP out next to this repository.")
+	end
+
+	return dir
 end
 
 local yampdir = resolve_yamp_dir()

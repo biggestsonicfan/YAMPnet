@@ -74,8 +74,11 @@ Point premake at YAMP's `source/` directory, in this order of precedence:
 2. the `YAMP_DIR` environment variable
 3. `../YAMP/source` — the default, a sibling checkout
 
-If none of those contains `net/YampNet.h`, premake stops with a message naming what it looked for,
-rather than letting the failure surface as a missing include three minutes into a compile.
+The first of those that is **set** is the one used — a path you named that turns out to be wrong
+is a hard error, not a quiet fall-through to the next candidate, because building against a
+different YAMP tree than the one you asked for is worse than not building. Either way premake
+stops with a message naming the path it tried and where that path came from, rather than letting
+the failure surface as a missing include three minutes into a compile.
 
 ### The layout handshake
 
