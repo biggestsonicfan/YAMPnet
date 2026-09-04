@@ -1,0 +1,95 @@
+# Builds yampnet.dll on a clean machine.
+#
+# The point of this workflow is the thing that is easy to break now that the plugin lives in its
+# own repository: it does not compile against its own headers alone. It needs YampNet.h (the ABI),
+# pxd/LJ/sl.h and m2ftg/m2ftg.h out of a YAMP checkout, because the plugin writes
+# execute_info.pad[] itself. A change on either side that breaks the other used to be caught by
+# the shared solution; here, CI is what catches it.
+
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      yamp_ref:
+        description: "YAMP branch, tag or SHA to build against"
+        default: master
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  # Pinned rather than "latest" on purpose: premake betas have changed API behaviour between
+  # releases (beta7 -> beta8 deprecated the flag this project's premake5.lua used to pass), and CI
+  # should build the way a developer's machine does, not the way next month's release does.
+  PREMAKE_VERSION: 5.0.0-beta7
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    # pwsh is already the default shell on Windows runners; saying so keeps the download step from
+    # depending on that staying true.
+    defaults:
+      run:
+        shell: pwsh
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Debug is the fast "does it still compile" signal; Release additionally exercises the
+        # optimizer and link-time codegen, which have caught real problems in this codebase before.
+        configuration: [Debug, Release]
+
+    steps:
+      - name: Check out yampnet
+        uses: actions/checkout@v4
+        with:
+          path: yampnet
+
+      - name: Check out YAMP (for the headers this plugin is coupled to)
+        uses: actions/checkout@v4
+        with:
+          repository: biggestsonicfan/YAMP
+          ref: ${{ inputs.yamp_ref || 'master' }}
+          path: YAMP
+          # No submodules. YAMP's source/Utils (ModUtils) is a PRIVATE repository, and the plugin
+          # does not include a single header from it - verified by building from clean clones with
+          # source/Utils empty. Asking for it here would need a PAT to fetch something unused.
+
+      # Checked out as SIBLINGS above so premake's documented default - ../YAMP/source - is what
+      # resolves here. That is deliberate: it means CI exercises the fallback chain a first-time
+      # contributor hits, rather than a path only CI ever passes. If it stops resolving, premake
+      # fails with a message naming exactly what it looked for.
+      - name: Fetch premake5
+        working-directory: yampnet
+        run: |
+          $url = "https://github.com/premake/premake-core/releases/download/v$env:PREMAKE_VERSION/premake-$env:PREMAKE_VERSION-windows.zip"
+          Invoke-WebRequest -Uri $url -OutFile premake.zip
+          Expand-Archive -Path premake.zip -DestinationPath . -Force
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Generate project files
+        working-directory: yampnet
+        run: .\premake5.exe vs2022
+
+      # The vcxproj, not the sln: premake maps the "Debug"/"Win64" solution configuration onto a
+      # "Debug Win64"/x64 project configuration, and MSBuild wants the project's own names.
+      - name: Build
+        working-directory: yampnet
+        run: msbuild build\YampNet.vcxproj -p:Configuration="${{ matrix.configuration }} Win64" -p:Platform=x64 -m
+
+      - name: Upload yampnet.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: yampnet-${{ matrix.configuration }}
+          path: |
+            yampnet/build/bin/Win64/${{ matrix.configuration }}/yampnet.dll
+            yampnet/build/bin/Win64/${{ matrix.configuration }}/yampnet.pdb
+          if-no-files-found: error
