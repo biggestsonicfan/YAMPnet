@@ -194,7 +194,7 @@ its own, and a mismatch is refused cleanly at load time. That is the backstop fo
 only one of the two halves got rebuilt — without it, a stale plugin would write pad bytes at the
 wrong offsets into the emulator's memory. Keep it honest when either layout changes.
 
-`YAMPNET_ABI_VERSION` is checked the same way, and is currently **11**.
+`YAMPNET_ABI_VERSION` is checked the same way, and is currently **12**.
 
 ## Signing up
 
@@ -213,6 +213,41 @@ The server requires five non-empty strings and YAMP asks for three of them. The 
 defaults to the account name, and the avatar URL to this project's page — a second display name is
 a question with no useful answer for someone with one account, and an avatar is a URL nobody has
 to hand.
+
+## The verification token
+
+RPCN's login takes **three** things, and the third is not a second password: `Login` carries
+`(npid, password, token)`, where the token is the 16 hexadecimal characters a server **mails**
+when the account is created. `yampnet_rpcn_config` names them apart — `password` and `token` —
+which is what ABI 12 is for: the field called `token` was carrying the password.
+
+**Empty is the normal value.** The server compares the token only when *it* has e-mail validation
+switched on, which is off by default and off on most community servers: `cmd_account.rs` passes
+`is_email_validated()` as `check_user`'s `check_token` argument. A client is never told which sort
+of server it has reached, so the plugin sends whatever the player has and lets the server decide.
+That is also why nothing here refuses to connect without one — the refusal belongs to the server,
+and a client-side rule would lock every player out of every server that does not validate.
+
+What the plugin does instead is make the answer legible. A refused login used to read
+`login rejected (ErrorType=9)`; RPCN distinguishes the three credentials
+(`LoginInvalidUsername`, `LoginInvalidPassword`, `LoginInvalidToken`) and each now says which box
+to correct — including the case worth splitting in two, where the token was refused because none
+was sent at all. Tokens are pasted out of e-mail, so they are trimmed of whitespace and
+upper-cased when they are entirely hexadecimal, matching what the server stores; anything else is
+sent unchanged with a warning in the log, because the format belongs to the server and this must
+never be the thing that locks someone out of one that changed it.
+
+### When the e-mail never arrives
+
+An account registered here that cannot log in until a token arrives is an account with no way
+out — so `SendToken` (command 4) is exposed as well, and `AccountMaker` runs it as its second
+job: same connection, same timeout, same reporting, with `GetJob()` saying which of the two
+succeeded so a UI can tell *account created* from *token sent*.
+
+It authenticates on the account name and password with `check_token = false` — you do not need
+the token to ask for the token, which is the entire point of the command. The server refuses it
+outright (`Invalid`) if it does no e-mail validation, and once per account per 24 hours
+(`TooSoon`); both arrive as a message rather than a state of their own.
 
 ## History
 

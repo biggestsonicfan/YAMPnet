@@ -24,15 +24,50 @@ namespace yampnet
             case RpcnError::Malformed:
                 return "the server rejected the sign-up as malformed - one of the fields is empty "
                        "or too long";
+            case RpcnError::CreationExistingUsername:
+            // Current RPCN answers CreationExistingUsername for a name clash; Invalid is what
+            // older builds sent, and it means nothing else after Create.
             case RpcnError::Invalid:
                 return "that account name is already taken on this server";
+            case RpcnError::CreationExistingEmail:
+                return "there is already an account on this server with that e-mail address";
+            case RpcnError::CreationBannedEmailProvider:
+                return "this server does not accept accounts from that e-mail provider - try an "
+                       "address somewhere else";
             case RpcnError::InvalidInput:
                 return "the server refused these details: the name must be 3-16 characters of "
                        "letters, digits, '-' or '_', and the e-mail address must be a real one";
             case RpcnError::TooSoon:
                 return "too many sign-ups from this address recently - wait a while and try again";
+            case RpcnError::DbFail:
+                return "the server's database did not answer";
             default:
                 return "the server refused the sign-up";
+            }
+        }
+
+        // The same for SendToken, where every code means something different again - Invalid is
+        // not a name clash here but "this server has no tokens at all".
+        const char* ResendErrorText(RpcnError error)
+        {
+            switch (error)
+            {
+            case RpcnError::Invalid:
+                return "this server does not verify accounts by e-mail, so it has no token to "
+                       "send - leave the token box empty and log in";
+            case RpcnError::TooSoon:
+                return "a token was already e-mailed for this account in the last 24 hours - the "
+                       "server will not send another until then";
+            case RpcnError::LoginError:
+                return "the server did not accept that account name and password";
+            case RpcnError::EmailFail:
+                return "the server could not send the e-mail";
+            case RpcnError::Malformed:
+                return "the server could not read the request";
+            case RpcnError::DbFail:
+                return "the server's database did not answer";
+            default:
+                return "the server refused to send the token";
             }
         }
     }
@@ -60,29 +95,22 @@ namespace yampnet
     {
         m_client.Disconnect();
         m_state = State::Idle;
+        m_job = Job::Create;
         m_pending = 0;
         m_deadline_ms = 0;
         m_error[0] = '\0';
     }
 
-    bool AccountMaker::Start(const char* server, uint16_t port, const char* fingerprint_hex,
-                             const Fields& fields)
+    bool AccountMaker::Begin(Job job, const char* server, uint16_t port,
+                             const char* fingerprint_hex)
     {
         Reset();
+        m_job = job;
 
         if (!server || !*server)
         {
-            Fail("no server to create the account on");
-            return false;
-        }
-        if (!fields.npid || !*fields.npid || !fields.password || !*fields.password)
-        {
-            Fail("an account name and a password are both required");
-            return false;
-        }
-        if (!fields.email || !*fields.email)
-        {
-            Fail("an e-mail address is required: the server stores one for every account");
+            Fail(job == Job::Create ? "no server to create the account on"
+                                    : "no server to ask for a token");
             return false;
         }
 
@@ -98,6 +126,33 @@ namespace yampnet
             Fail("could not reach %s: %s", server, m_client.LastError());
             return false;
         }
+
+        m_state = State::Working;
+        m_deadline_ms = GetTickCount64() + kReplyTimeoutMs;
+        return true;
+    }
+
+    bool AccountMaker::Start(const char* server, uint16_t port, const char* fingerprint_hex,
+                             const Fields& fields)
+    {
+        // The fields are checked before anything is connected, so a blank box costs no round
+        // trip and the message can name the box. Reset() first because these are failures of
+        // THIS attempt: the state a UI reads must be about what it just asked for.
+        Reset();
+        m_job = Job::Create;
+        if (!fields.npid || !*fields.npid || !fields.password || !*fields.password)
+        {
+            Fail("an account name and a password are both required");
+            return false;
+        }
+        if (!fields.email || !*fields.email)
+        {
+            Fail("an e-mail address is required: the server stores one for every account");
+            return false;
+        }
+
+        if (!Begin(Job::Create, server, port, fingerprint_hex))
+            return false;
 
         // Both of these are required by the server and neither is worth a form field: an online
         // name that is not the login name only confuses a player who has one account, and an
@@ -116,9 +171,30 @@ namespace yampnet
             Fail("%s", m_client.LastError());
             return false;
         }
+        return true;
+    }
 
-        m_state = State::Working;
-        m_deadline_ms = GetTickCount64() + kReplyTimeoutMs;
+    bool AccountMaker::StartTokenResend(const char* server, uint16_t port,
+                                        const char* fingerprint_hex, const char* npid,
+                                        const char* password)
+    {
+        Reset();
+        m_job = Job::ResendToken;
+        if (!npid || !*npid || !password || !*password)
+        {
+            Fail("the account name and password are both required to ask for a token");
+            return false;
+        }
+
+        if (!Begin(Job::ResendToken, server, port, fingerprint_hex))
+            return false;
+
+        m_pending = m_client.ResendToken(npid, password);
+        if (m_pending == 0)
+        {
+            Fail("%s", m_client.LastError());
+            return false;
+        }
         return true;
     }
 
@@ -127,24 +203,29 @@ namespace yampnet
         if (m_state != State::Working)
             return;
 
+        const RpcnCommand expect = (m_job == Job::Create) ? RpcnCommand::Create
+                                                          : RpcnCommand::SendToken;
+
         RpcnPacket pkt;
         while (m_client.Poll(&pkt))
         {
             // type 1 is a reply; the ServerInfo greeting (type 0) arrives first and says nothing
             // about this request.
-            if (pkt.type != 1 || static_cast<RpcnCommand>(pkt.command) != RpcnCommand::Create)
+            if (pkt.type != 1 || static_cast<RpcnCommand>(pkt.command) != expect)
                 continue;
             if (m_pending != 0 && pkt.packet_id != m_pending)
                 continue;
 
             if (pkt.error != RpcnError::NoError)
             {
-                Fail("%s (ErrorType=%u)", CreateErrorText(pkt.error),
+                Fail("%s (ErrorType=%u)",
+                     (m_job == Job::Create) ? CreateErrorText(pkt.error)
+                                            : ResendErrorText(pkt.error),
                      static_cast<unsigned>(pkt.error));
                 return;
             }
             m_error[0] = '\0';
-            Finish(State::Created);
+            Finish(State::Done);
             return;
         }
 

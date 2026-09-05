@@ -519,10 +519,14 @@ namespace
         s->account.Update();
         if (account_before != s->account.GetState())
         {
-            if (s->account.GetState() == yampnet::AccountMaker::State::Created)
-                s->Log(YAMPNET_LOG_INFO, "account created");
+            const bool resend = s->account.GetJob()
+                              == yampnet::AccountMaker::Job::ResendToken;
+            if (s->account.GetState() == yampnet::AccountMaker::State::Done)
+                s->Log(YAMPNET_LOG_INFO, resend ? "verification token e-mailed"
+                                                : "account created");
             else if (s->account.GetState() == yampnet::AccountMaker::State::Failed)
-                s->Log(YAMPNET_LOG_WARN, "account not created: %s", s->account.LastError());
+                s->Log(YAMPNET_LOG_WARN, resend ? "token not sent: %s" : "account not created: %s",
+                       s->account.LastError());
         }
 
         if (s->state == YAMPNET_STATE_IDLE || s->state == YAMPNET_STATE_FAILED)
@@ -664,7 +668,10 @@ namespace
         tc.server = cfg->server;
         tc.port = cfg->port ? cfg->port : kRpcnDefaultPort;
         tc.npid = cfg->npid;
-        tc.password = cfg->token;          // token field carries the password/auth secret
+        tc.password = cfg->password;
+        // Normally empty, and only meaningful against a server that verifies accounts by e-mail.
+        // Passed through untouched: the transport tidies it and decides what to say about it.
+        tc.token = cfg->token;
         tc.com_id = com_id;
         tc.fingerprint_hex = cfg->cert_fingerprint;
         tc.log = &TransportLog;
@@ -705,13 +712,35 @@ namespace
         return YAMPNET_OK;
     }
 
+    yampnet_result ApiResendToken(yampnet_session* s, const yampnet_account_config* cfg)
+    {
+        if (!s || !cfg) return YAMPNET_ERR_ARG;
+
+        s->Log(YAMPNET_LOG_INFO, "asking %s to re-send the token for '%s'",
+               cfg->server ? cfg->server : "?", cfg->npid ? cfg->npid : "?");
+
+        if (!s->account.StartTokenResend(cfg->server, cfg->port, cfg->cert_fingerprint, cfg->npid,
+                                         cfg->password))
+        {
+            // Reported through get_account_error for the same reason a rejected sign-up is: this
+            // leaves the session exactly as it was and must not read as netplay failing.
+            s->Log(YAMPNET_LOG_WARN, "token not sent: %s", s->account.LastError());
+            return YAMPNET_ERR_NETWORK;
+        }
+        return YAMPNET_OK;
+    }
+
     yampnet_account_state ApiGetAccountState(yampnet_session* s)
     {
         if (!s) return YAMPNET_ACCOUNT_IDLE;
         switch (s->account.GetState())
         {
         case yampnet::AccountMaker::State::Working: return YAMPNET_ACCOUNT_WORKING;
-        case yampnet::AccountMaker::State::Created: return YAMPNET_ACCOUNT_CREATED;
+        // One class does both jobs, so WHICH one succeeded is read off the job rather than the
+        // state - a resend that reported "account created" would be a lie a player acts on.
+        case yampnet::AccountMaker::State::Done:
+            return (s->account.GetJob() == yampnet::AccountMaker::Job::ResendToken)
+                 ? YAMPNET_ACCOUNT_TOKEN_SENT : YAMPNET_ACCOUNT_CREATED;
         case yampnet::AccountMaker::State::Failed:  return YAMPNET_ACCOUNT_FAILED;
         default:                                    return YAMPNET_ACCOUNT_IDLE;
         }
@@ -1101,6 +1130,7 @@ namespace
         &ApiCreateAccount,
         &ApiGetAccountState,
         &ApiGetAccountError,
+        &ApiResendToken,
     };
 }
 

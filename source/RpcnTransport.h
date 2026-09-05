@@ -44,6 +44,10 @@ namespace yampnet
             const char* fingerprint_hex = nullptr;   // null/empty = validate chain + host name
             const char* npid = nullptr;
             const char* password = nullptr;
+            // RPCN's e-mail verification token, when the player has one. Null/empty is the normal
+            // case and the right one for a server that does not validate accounts by e-mail - see
+            // RpcnClient::Login for why the client cannot tell which sort of server it has.
+            const char* token = nullptr;
             // The lobby space to play in. One per game - see ComId.h for the standard and
             // comid::Resolve(), which is what turns a host's game key into one of these.
             const char* com_id = nullptr;            // e.g. "YMPSNCFTR_00"
@@ -128,6 +132,10 @@ namespace yampnet
 
         char m_com_id[16] = {};
         char m_npid[20] = {};
+        // Whether a token was sent with the login, kept only so a LoginInvalidToken can say
+        // whether the fix is correcting the token or supplying one at all. The token itself is
+        // used once and deliberately not retained.
+        bool m_sent_token = false;
         char m_peer_npid[20] = {};
 
         uint16_t m_server_id = 0;

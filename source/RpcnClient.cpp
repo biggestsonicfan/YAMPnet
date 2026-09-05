@@ -140,8 +140,9 @@ namespace yampnet
             return 0;
         }
 
-        // Three NUL-terminated strings: login, password, token. The token may be empty (the
-        // server reads it with get_string(true)) but its terminator must still be present.
+        // Three NUL-terminated strings: login, password, token. The token may be empty - the
+        // server reads it with get_string(true), the only one of the three that tolerates that -
+        // but its terminator must still be present.
         StringPacker p;
         p.Put(npid);
         p.Put(password);
@@ -152,6 +153,92 @@ namespace yampnet
             return 0;
         }
         return Request(RpcnCommand::Login, p.buf, p.n);
+    }
+
+    uint64_t RpcnClient::ResendToken(const char* npid, const char* password)
+    {
+        // Both are read with get_string(false), so an empty one is Malformed at the server. Caught
+        // here because "the request was malformed" says nothing about which box was left blank.
+        if (!npid || !*npid || !password || !*password)
+        {
+            Fail("SendToken: the account name and password are both required");
+            return 0;
+        }
+
+        StringPacker p;
+        p.Put(npid);
+        p.Put(password);
+        if (!p.ok)
+        {
+            Fail("SendToken: credentials too long");
+            return 0;
+        }
+        return Request(RpcnCommand::SendToken, p.buf, p.n);
+    }
+
+    bool RpcnClient::NormalizeToken(const char* in, char* out, uint32_t cap)
+    {
+        if (!out || cap == 0)
+            return false;
+        out[0] = '\0';
+        if (!in)
+            return true;
+
+        auto is_space = [](char c) {
+            return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+        };
+        auto is_hex = [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        };
+
+        const char* begin = in;
+        while (*begin && is_space(*begin))
+            ++begin;
+        const char* end = begin + strlen(begin);
+        while (end > begin && is_space(end[-1]))
+            --end;
+
+        const uint32_t len = static_cast<uint32_t>(end - begin);
+        if (len + 1 > cap)
+            return false;
+
+        // Case is only ours to change where it cannot mean anything: an all-hex value is the
+        // server's own "{:02X}" and folds safely, while anything else might be a format that
+        // distinguishes case and is copied exactly.
+        bool all_hex = len != 0;
+        for (const char* p = begin; p != end; ++p)
+        {
+            if (!is_hex(*p))
+            {
+                all_hex = false;
+                break;
+            }
+        }
+
+        uint32_t n = 0;
+        for (const char* p = begin; p != end; ++p)
+        {
+            char c = *p;
+            if (all_hex && c >= 'a' && c <= 'f')
+                c = static_cast<char>(c - 'a' + 'A');
+            out[n++] = c;
+        }
+        out[n] = '\0';
+        return true;
+    }
+
+    bool RpcnClient::LooksLikeToken(const char* token)
+    {
+        if (!token || strlen(token) != kTokenLength)
+            return false;
+        for (const char* p = token; *p; ++p)
+        {
+            const bool hex = (*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'F')
+                          || (*p >= 'a' && *p <= 'f');
+            if (!hex)
+                return false;
+        }
+        return true;
     }
 
     uint64_t RpcnClient::CreateAccount(const char* npid, const char* password,

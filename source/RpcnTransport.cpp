@@ -28,6 +28,37 @@ namespace yampnet
         // Not a game packet: shorter than a PacketHeader, so the lockstep layer discards it even
         // if one is delivered. Its only job is to make our NAT create a mapping towards the peer.
         constexpr uint8_t kPunchPacket[4] = { 'Y', 'N', 'P', '!' };
+
+        // What a rejected login means for the PLAYER. RPCN says which of the three credentials it
+        // refused - the account name, the password and the e-mail token fail separately - and that
+        // distinction is the difference between a fix that takes ten seconds and a settings page
+        // full of boxes to guess at. `sent_token` splits the token case in two, because "the token
+        // is wrong" and "this server wanted a token and got none" are not the same problem.
+        const char* LoginErrorText(RpcnError error, bool sent_token)
+        {
+            switch (error)
+            {
+            case RpcnError::LoginInvalidUsername:
+                return "there is no account of that name on this server";
+            case RpcnError::LoginInvalidPassword:
+                return "wrong password for that account";
+            case RpcnError::LoginInvalidToken:
+                return sent_token
+                     ? "the verification token was refused - check it against the e-mail the "
+                       "server sent, or have a fresh one sent"
+                     : "this server verifies accounts by e-mail and no token was given - paste "
+                       "the one from the sign-up e-mail into the token field";
+            case RpcnError::LoginAlreadyLoggedIn:
+                return "that account is already logged in - RPCN allows one session per account, "
+                       "so close the other client and wait for the server to drop it";
+            case RpcnError::Malformed:
+                return "the server could not read the login request";
+            case RpcnError::DbFail:
+                return "the server's database did not answer";
+            default:
+                return "the server refused the login";
+            }
+        }
     }
 
     void RpcnTransport::Fail(const char* fmt, ...)
@@ -111,6 +142,24 @@ namespace yampnet
         strncpy_s(m_com_id, cfg.com_id, _TRUNCATE);
         strncpy_s(m_npid, cfg.npid, _TRUNCATE);
 
+        // The token as the player supplied it, which normally means pasted out of an e-mail. It is
+        // tidied rather than validated: a value that does not look like one is still sent, because
+        // only the server knows what its tokens look like, and refusing here would turn a server
+        // change into "netplay stopped working" with nothing to try.
+        char token[128] = {};
+        if (!RpcnClient::NormalizeToken(cfg.token, token, sizeof(token)))
+        {
+            Fail("that verification token is too long to be one - RPCN mails %u characters",
+                 static_cast<unsigned>(RpcnClient::kTokenLength));
+            return false;
+        }
+        m_sent_token = token[0] != '\0';
+        if (m_sent_token && !RpcnClient::LooksLikeToken(token))
+        {
+            Note("the verification token does not look like one (RPCN mails %u hexadecimal "
+                 "characters); sending it anyway", static_cast<unsigned>(RpcnClient::kTokenLength));
+        }
+
         CertFingerprint pin;
         if (cfg.fingerprint_hex && *cfg.fingerprint_hex && !pin.FromHex(cfg.fingerprint_hex))
         {
@@ -132,7 +181,7 @@ namespace yampnet
             return false;
         }
 
-        if (!m_client.Login(cfg.npid, cfg.password, ""))
+        if (!m_client.Login(cfg.npid, cfg.password, token))
         {
             Fail("login could not be sent: %s", m_client.LastError());
             return false;
@@ -153,6 +202,7 @@ namespace yampnet
         m_peer_port = 0;
         m_peer_heard = false;
         m_peer_npid[0] = '\0';
+        m_sent_token = false;
         m_pending_serverlist = m_pending_worldlist = m_pending_room = m_pending_signaling = 0;
         m_pending_search = 0;
         m_signaling_retry_ms = 0;
@@ -293,7 +343,9 @@ namespace yampnet
             {
                 if (pkt.error != RpcnError::NoError)
                 {
-                    Fail("login rejected (ErrorType=%u)", static_cast<unsigned>(pkt.error));
+                    Fail("login rejected: %s (ErrorType=%u)",
+                         LoginErrorText(pkt.error, m_sent_token),
+                         static_cast<unsigned>(pkt.error));
                     return false;
                 }
                 // Discovery next. With CreateMissing on, this registers the title if new.

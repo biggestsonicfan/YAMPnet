@@ -29,6 +29,9 @@ namespace yampnet
         Login = 0,
         Terminate = 1,
         Create = 2,
+        // Re-mails the token of an account that already exists. Unauthenticated like Create, and
+        // like Create the server hangs up after answering it.
+        SendToken = 4,
         GetServerList = 12,
         GetWorldList = 13,
         CreateRoom = 14,
@@ -41,6 +44,10 @@ namespace yampnet
         RequestSignalingInfos = 27,
     };
 
+    // Values match the server's ErrorType enum exactly (declaration order). The whole enum is
+    // spelled out rather than the handful this client can meet, because the numbers are what a log
+    // carries and a name is the only thing that makes one readable - and because a partial copy is
+    // how the room-password codes ended up documented one off from the server's.
     enum class RpcnError : uint8_t
     {
         NoError = 0,
@@ -48,6 +55,38 @@ namespace yampnet
         Invalid = 2,
         InvalidInput = 3,
         TooSoon = 4,
+        // Login. WHICH credential was refused is the entire value of these three: the account
+        // name, the password and the e-mail token fail separately and are fixed separately.
+        LoginError = 5,
+        LoginAlreadyLoggedIn = 6,
+        LoginInvalidUsername = 7,
+        LoginInvalidPassword = 8,
+        LoginInvalidToken = 9,
+        // Create.
+        CreationError = 10,
+        CreationExistingUsername = 11,
+        CreationBannedEmailProvider = 12,
+        CreationExistingEmail = 13,
+        RoomMissing = 14,
+        RoomAlreadyJoined = 15,
+        RoomFull = 16,
+        RoomPasswordMismatch = 17,
+        RoomPasswordMissing = 18,
+        RoomGroupNoJoinLabel = 19,
+        RoomGroupFull = 20,
+        RoomGroupJoinLabelNotFound = 21,
+        RoomGroupMaxSlotMismatch = 22,
+        Unauthorized = 23,
+        DbFail = 24,
+        EmailFail = 25,
+        NotFound = 26,
+        Blocked = 27,
+        AlreadyFriend = 28,
+        ScoreNotBest = 29,
+        ScoreInvalid = 30,
+        ScoreHasData = 31,
+        CondFail = 32,
+        Unsupported = 33,
     };
 
     // Server-pushed notifications (packet_type 2). Values are the declaration order of the
@@ -87,8 +126,41 @@ namespace yampnet
         void Disconnect();
         bool IsConnected() const { return m_tls.IsConnected(); }
 
-        // Sends Login (npid, password, token). Token may be empty. Returns the packet id, or 0.
+        // Sends Login (npid, password, token). Returns the packet id, or 0.
+        //
+        // THE TOKEN IS NOT A SECOND PASSWORD: it is the e-mail verification token, 16 hexadecimal
+        // characters the server mails when the account is created, and the server compares it only
+        // when IT has e-mail validation switched on - cmd_account.rs passes is_email_validated()
+        // as check_user's check_token argument. A client cannot ask which kind of server it is
+        // talking to, so it sends whatever the player has: empty is correct for a server that does
+        // not validate, and one that does answers LoginInvalidToken rather than a generic refusal.
         uint64_t Login(const char* npid, const char* password, const char* token);
+
+        // Sends SendToken: mails the account's token again, for a player who signed up and never
+        // got the message. Two strings, npid and password - it authenticates with
+        // check_user(..., check_token = false), so the token is not needed to ask for the token,
+        // which is the entire point of the command. Returns the packet id, or 0.
+        //
+        // Unauthenticated, like Create, and the server hangs up after answering. It refuses with
+        // Invalid on a server that does no e-mail validation (there is no token to send) and
+        // TooSoon within 24 hours of the last one.
+        uint64_t ResendToken(const char* npid, const char* password);
+
+        // What RPCN mails: 8 random bytes formatted "{:02X}", so 16 uppercase hex characters.
+        static constexpr uint32_t kTokenLength = 16;
+
+        // Tidies a token as a PLAYER supplies it - which means pasted out of an e-mail, with
+        // whatever whitespace came along. Trims both ends, and upper-cases a value that is
+        // entirely hexadecimal because the server stores it upper-case and compares byte for byte.
+        //
+        // Anything that is not 16 hex characters passes through with its case untouched instead of
+        // being rejected: the format belongs to the server, and this must never be the thing that
+        // locks a player out of one that changed it. Returns false only if the result does not fit
+        // `cap`. `out` is always NUL-terminated when cap > 0.
+        static bool NormalizeToken(const char* in, char* out, uint32_t cap);
+        // True when `token` is exactly what the server mails. For WARNING a player that what they
+        // pasted does not look like a token - never for refusing to send it.
+        static bool LooksLikeToken(const char* token);
 
         // Sends Create to register an account. Server rules, worth knowing before you call:
         //   * npid and online_name must be 3-16 chars of [A-Za-z0-9_-].
@@ -119,8 +191,8 @@ namespace yampnet
         static uint32_t ParseServerList(const uint8_t* p, uint32_t size, uint16_t* out, uint32_t max);
         static uint32_t ParseWorldList(const uint8_t* p, uint32_t size, uint32_t* out, uint32_t max);
 
-        // `password` may be null/empty for a public room. RPCN answers RoomPasswordMismatch(18)
-        // or RoomPasswordMissing(19) on a bad join rather than a generic failure.
+        // `password` may be null/empty for a public room. RPCN answers RoomPasswordMismatch(17)
+        // or RoomPasswordMissing(18) on a bad join rather than a generic failure.
         //
         // `flag_attr` is the room's u32 attribute word, which YAMP uses to publish the cabinet
         // settings a match will be played under (see YAMPNET_ROOM_FLAG_* in YampNet.h). The server
