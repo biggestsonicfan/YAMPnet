@@ -23,6 +23,7 @@
 #include <cstring>
 #include <new>
 
+#include "ComId.h"
 #include "Lockstep.h"
 #include "PadCodec.h"
 #include "RpcnTransport.h"
@@ -624,12 +625,29 @@ namespace
     {
         if (!s || !cfg) return YAMPNET_ERR_ARG;
 
+        // The ComId decides which lobby list this session sees, and nothing downstream can
+        // recover from getting it wrong: two peers whose ids differ never see each other's rooms,
+        // and every game sharing ONE id sees rooms it cannot actually play. So whatever the host
+        // passed - a game name, a romset, an id it built itself - is put through the standard in
+        // ComId.h first. Stack storage is fine: Start() copies the string into the transport.
+        char com_id[yampnet::comid::kBufferSize] = {};
+        const char* com_note = "";
+        if (!yampnet::comid::Resolve(cfg->communication_id, com_id, &com_note))
+        {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "communication id: %s", com_note);
+            s->Fail(msg);
+            return YAMPNET_ERR_ARG;
+        }
+        s->Log(yampnet::comid::IsSharedLobbySpace(com_id) ? YAMPNET_LOG_WARN : YAMPNET_LOG_INFO,
+               "communication id %s - %s", com_id, com_note);
+
         RpcnTransport::Config tc;
         tc.server = cfg->server;
         tc.port = cfg->port ? cfg->port : kRpcnDefaultPort;
         tc.npid = cfg->npid;
         tc.password = cfg->token;          // token field carries the password/auth secret
-        tc.com_id = cfg->communication_id;
+        tc.com_id = com_id;
         tc.fingerprint_hex = cfg->cert_fingerprint;
         tc.log = &TransportLog;
         tc.log_ctx = s;
@@ -640,8 +658,8 @@ namespace
             return YAMPNET_ERR_NETWORK;
         }
         s->state = YAMPNET_STATE_CONNECTING;
-        s->Log(YAMPNET_LOG_INFO, "connecting to %s:%u as %s",
-               cfg->server ? cfg->server : "?", tc.port, cfg->npid ? cfg->npid : "?");
+        s->Log(YAMPNET_LOG_INFO, "connecting to %s:%u as %s (com id %s)",
+               cfg->server ? cfg->server : "?", tc.port, cfg->npid ? cfg->npid : "?", com_id);
         return YAMPNET_OK;
     }
 

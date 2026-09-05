@@ -34,9 +34,75 @@ Two netcodes, chosen per game by what the board actually needs:
 | Lockstep engine | `source/Lockstep.{h,cpp}` |
 | Pad encode/decode (the determinism rule) | `source/PadCodec.{h,cpp}` |
 | RPCN client — login, rooms, signaling | `source/RpcnClient.{h,cpp}`, `source/RpcnTransport.{h,cpp}` |
+| Per-game Communication IDs | `source/ComId.{h,cpp}` |
 | RPCN's protobuf wire format | `source/Protobuf.{h,cpp}` |
 | Schannel TLS | `source/TlsClient.{h,cpp}` |
 | Plain UDP fallback for LAN testing | `source/Transport.{h,cpp}` |
+
+## One lobby space per game
+
+RPCN partitions everything by **Communication ID**: the server list, the world list, room
+creation, room search. Two clients see each other's rooms only if their ComIds match byte for
+byte, so a build that hardcodes one id — the PS3 port's `NPWR02113_00`, say — drops every game
+YAMP hosts into a single lobby list. A Virtual On cabinet then advertises next to a Sonic the
+Fighters one, both look joinable, and the mismatch only shows up once the netcodes are already
+talking. `source/ComId.{h,cpp}` is the standard that prevents that.
+
+```
+YMP SNCFTR _00      12 characters
+^^^ ^^^^^^  ^^
+|   |       netcode revision channel
+|   six-character game code
+the YAMP namespace — never a real PSN title's prefix
+```
+
+Nine characters is the whole of the usable namespace: RPCN reads the ComId as exactly 12 bytes and
+rejects the request as *Malformed* unless the first 9 are ASCII uppercase letters or digits. It
+does not police the last three, and PSN's own ids spell them `_NN`.
+
+| Game | ComId | Keys it answers to |
+| --- | --- | --- |
+| Sonic the Fighters / Sonic Championship | `YMPSNCFTR_00` | `stf`, `sonicthefighters`, `sonicchampionship` |
+| Virtua Fighter 2 | `YMPVRTFT2_00` | `vf2`, `virtuafighter2` |
+| Fighting Vipers | `YMPFGTVPR_00` | `fv`, `fvipers`, `fightingvipers` |
+| Fighting Vipers 2 | `YMPFGTVP2_00` | `fv2`, `fvipers2`, `fightingvipers2` |
+| Cyber Troopers Virtual On | `YMPVRTLON_00` | `von`, `virtualon`, `cybertroopers` |
+| Daytona USA 2: Battle on the Edge | `YMPDYT2BE_00` | `daytona2`, `daytonausa2` |
+| Daytona USA 2: Power Edition | `YMPDYT2PE_00` | `dayto2pe`, `daytonausa2poweredition` |
+| anything else | derived — see below | |
+
+The two Daytona editions get separate spaces on purpose: they are separate ROM sets whose link
+protocol never spoke across the version boundary in the arcade either, so one shared list would
+advertise matches that cannot be played. The bare key follows MAME, where `daytona2` *is* Battle
+on the Edge. Revisions of a single ROM (`vf2`, `vf2a`, `vf2b`) do share a space — that granularity
+is the game, and telling a peer its ROM revision differs is the room attribute word's job, not a
+namespace's.
+
+A game that is not in that table is **not** left to share someone else's space: its code is a
+base32 hash of its key, so it gets one of its own with no central registry to agree on and no
+`servers.cfg` edit — RPCN's `CreateMissing` registers a ComId the first time it is asked about.
+Naming a game in the table only buys a readable id, and *moves* it, so add a game before people
+play it or leave it derived.
+
+**The game key is part of the standard.** The plugin learns nothing about the title through the
+ABI, so the key is whatever YAMP passes in `yampnet_rpcn_config::communication_id`, and
+`comid::Resolve()` sorts out what it got:
+
+* an id already in the `YMP` namespace — used as-is,
+* any other id in canonical `XXXXXXXXX_NN` form — used as-is, and **logged as a warning**, because
+  wanting a real title's lobbies is legitimate and hardcoding one id for every game looks exactly
+  the same from here,
+* anything else — read as a game key and turned into an id.
+
+Keys are case- and punctuation-insensitive (`Sonic the Fighters`, `sonic_the_fighters` and `STF`
+are one key), and the table carries aliases, because two spellings would otherwise be two lobby
+lists. A ROM or romset name makes a better key than a display title, which gets retitled.
+
+The `_NN` tail is a compatibility channel, bumped only for a change that breaks peer-to-peer
+compatibility with the previous build. It is not `YAMPNET_ABI_VERSION`: that one guards
+host-to-plugin compatibility and is refused at load. This one guards plugin-to-plugin
+compatibility, where the only enforcement available is that mismatched builds never see the same
+rooms — so bumping it strands everyone still on the old build, which is the point.
 
 ## Getting a build
 

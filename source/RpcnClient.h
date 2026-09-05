@@ -105,7 +105,8 @@ namespace yampnet
 
         // --- Rooms --------------------------------------------------------------------------
         // Room commands are framed as [12-byte ComId][u32 LE protobuf length][protobuf].
-        // The ComId's first 9 bytes must be ASCII uppercase/digits (e.g. "NPWR02113_00"), and the
+        // The ComId's first 9 bytes must be ASCII uppercase/digits (e.g. "YMPSNCFTR_00" - ComId.h
+        // has the per-game standard, and why one id for every game is a bug), and the
         // (comId, worldId) pair MUST exist in the server's servers.cfg or the server answers
         // InvalidInput - it looks the pair up in its `world` table and does not invent defaults.
         // The proper discovery order before creating a room. With the server's CreateMissing=true

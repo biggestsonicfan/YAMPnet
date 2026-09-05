@@ -44,7 +44,9 @@ namespace yampnet
             const char* fingerprint_hex = nullptr;   // null/empty = validate chain + host name
             const char* npid = nullptr;
             const char* password = nullptr;
-            const char* com_id = nullptr;            // e.g. "NPWR02113_00"
+            // The lobby space to play in. One per game - see ComId.h for the standard and
+            // comid::Resolve(), which is what turns a host's game key into one of these.
+            const char* com_id = nullptr;            // e.g. "YMPSNCFTR_00"
             uint16_t local_p2p_port = kRpcnP2PPort;  // override for tests only
 
             // Optional progress log. Connection problems here are almost always somebody's NAT or

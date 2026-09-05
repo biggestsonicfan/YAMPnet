@@ -1,5 +1,7 @@
 #include "RpcnTransport.h"
 
+#include "ComId.h"
+
 #include <windows.h>
 
 #include <cstdarg>
@@ -92,6 +94,17 @@ namespace yampnet
         if (!cfg.server || !cfg.npid || !cfg.password || !cfg.com_id)
         {
             Fail("RpcnTransport: server, npid, password and com_id are all required");
+            return false;
+        }
+
+        // Checked here rather than left to the server: a malformed id surfaces as an
+        // InvalidInput/Malformed error three requests into discovery, which reads like the server
+        // refusing the account. Callers normally arrive via comid::Resolve(), so this is the
+        // backstop for the ones that do not.
+        if (!comid::IsWellFormed(cfg.com_id))
+        {
+            Fail("'%s' is not a usable communication id: RPCN needs 9 to 12 characters whose "
+                 "first 9 are uppercase letters or digits", cfg.com_id);
             return false;
         }
 
