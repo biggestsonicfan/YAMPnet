@@ -62,21 +62,25 @@ does not police the last three, and PSN's own ids spell them `_NN`.
 
 | Game | ComId | Keys it answers to |
 | --- | --- | --- |
-| Sonic the Fighters / Sonic Championship | `YMPSNCFTR_00` | `stf`, `sonicthefighters`, `sonicchampionship` |
-| Virtua Fighter 2 | `YMPVRTFT2_00` | `vf2`, `virtuafighter2` |
-| Fighting Vipers | `YMPFGTVPR_00` | `fv`, `fvipers`, `fightingvipers` |
-| Fighting Vipers 2 | `YMPFGTVP2_00` | `fv2`, `fvipers2`, `fightingvipers2` |
-| Cyber Troopers Virtual On | `YMPVRTLON_00` | `von`, `virtualon`, `cybertroopers` |
-| Daytona USA 2: Battle on the Edge | `YMPDYT2BE_00` | `daytona2`, `daytonausa2` |
-| Daytona USA 2: Power Edition | `YMPDYT2PE_00` | `dayto2pe`, `daytonausa2poweredition` |
+| Sonic the Fighters | `YMPSNCFTR_00` | `Sonic the Fighters`, `StF`, `StF-Gaiden` |
+| Virtua Fighter 2 | `YMPVRTFT2_00` | `Virtua Fighter 2`, `VF2`, `VF2-K2` |
+| Fighting Vipers | `YMPFGTVPR_00` | `Fighting Vipers`, `FV`, `fvipers` |
+| Fighting Vipers 2 | `YMPFGTVP2_00` | `Fighting Vipers 2`, `FV2` |
+| Motor Raid | `YMPMTRRAD_00` | `Motor Raid`, `MR`, `MR-Gaiden` |
+| Cyber Troopers Virtual On | `YMPVRTLON_00` | `Virtual On`, `VON`, `VON-K2` |
+| Sega Racing Classic 2 (Daytona USA 2) | `YMPDYTNA2_00` | `Sega Racing Classic 2`, `SRC2`, `Daytona USA 2` |
+| Virtua Fighter 5: Final Showdown | `YMPVRTFT5_00` | `Virtua Fighter 5: Final Showdown`, `VF5FS` |
 | anything else | derived — see below | |
 
-The two Daytona editions get separate spaces on purpose: they are separate ROM sets whose link
-protocol never spoke across the version boundary in the arcade either, so one shared list would
-advertise matches that cannot be played. The bare key follows MAME, where `daytona2` *is* Battle
-on the Edge. Revisions of a single ROM (`vf2`, `vf2a`, `vf2b`) do share a space — that granularity
-is the game, and telling a peer its ROM revision differs is the room attribute word's job, not a
-namespace's.
+Those keys are YAMP's own: `GameRegistry.cpp`'s `arcadeName` is what `net::AutoComIdKey()` sends,
+and each game's tag is listed beside it so either spelling lands in the same place. The tag rows
+fold the parent title back out on purpose — YAMP scopes save data by `VF2` vs `VF2-K2` because
+Yakuza: Like a Dragon and Kiwami 2 ship separate installs, but the arcade game is what a match is
+played against, so both belong in one lobby.
+
+Revisions of a single ROM share a space too, and that granularity is deliberate: telling a peer
+its ROM revision differs is the room attribute word's job, where the joiner can be shown why, not
+a namespace's — a separate space would only hide the mismatch behind an empty room list.
 
 A game that is not in that table is **not** left to share someone else's space: its code is a
 base32 hash of its key, so it gets one of its own with no central registry to agree on and no

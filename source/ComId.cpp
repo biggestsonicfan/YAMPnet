@@ -26,41 +26,66 @@ namespace yampnet::comid
         // game are two lobby spaces. Every plausible spelling a build might use should land on the
         // same code.
         constexpr RegistryEntry kRegistry[] = {
+            // Keyed on YAMP's arcadeName (GameRegistry.cpp), which is what NetPlugin's
+            // AutoComIdKey() passes, with each game's TAG alongside it - a key is whatever the
+            // host sends, and the two spellings must not become two lobby lists.
+            //
+            // The tag rows deliberately fold the parent title back out. YAMP scopes save data by
+            // "VF2" vs "VF2-K2" because Yakuza: Like a Dragon and Kiwami 2 ship separate installs,
+            // but the ARCADE GAME is what a match is played against, so both belong in one lobby.
+
             // Sonic the Fighters - the lockstep netcode's first game, modelled on the PS3 port.
             { "SONICTHEFIGHTERS", "SNCFTR" },
             { "SONICFIGHTERS",    "SNCFTR" },
             { "SONICCHAMPIONSHIP","SNCFTR" },   // the Japanese title of the same board
             { "STF",              "SNCFTR" },
+            { "STFGAIDEN",        "SNCFTR" },
 
-            // The other two Model 2 fighters. Both are lockstep games, same as StF.
+            // The other Model 2 fighters, lockstep like StF.
             { "VIRTUAFIGHTER2",   "VRTFT2" },
             { "VF2",              "VRTFT2" },
+            { "VF2K2",            "VRTFT2" },
             { "FIGHTINGVIPERS",   "FGTVPR" },
             { "FVIPERS",          "FGTVPR" },   // the romset name
             { "FV",               "FGTVPR" },
 
-            // Fighting Vipers 2 - a different board from the three above, same netcode.
-            { "FIGHTINGVIPERS2",  "FGTVP2" },
-            { "FVIPERS2",         "FGTVP2" },
-            { "FV2",              "FGTVP2" },
+            // Motor Raid - Model 2, and a linked-cabinet racer rather than a fighter.
+            { "MOTORRAID",        "MTRRAD" },
+            { "MR",               "MTRRAD" },
+            { "MRGAIDEN",         "MTRRAD" },
 
             // Cyber Troopers Virtual On - the first game to use the linked-cabinet channel.
             { "VIRTUALON",        "VRTLON" },
             { "CYBERTROOPERS",    "VRTLON" },
             { "VONLINE",          "VRTLON" },
             { "VON",              "VRTLON" },
+            { "VONK2",            "VRTLON" },
 
-            // Daytona USA 2, linked-cabinet like Virtual On - and the reason the two EDITIONS get
-            // separate codes rather than aliasing onto one: they are separate ROM sets whose link
-            // protocol never spoke across the version boundary in the arcade either, so a shared
-            // lobby list would advertise matches that cannot be played. The bare key follows MAME,
-            // where `daytona2` IS Battle on the Edge and Power Edition is `dayto2pe`.
-            { "DAYTONAUSA2",      "DYT2BE" },
-            { "DAYTONA2",         "DYT2BE" },
-            { "DAYTONAUSA2BATTLEONTHEEDGE", "DYT2BE" },
-            { "DAYTO2PE",         "DYT2PE" },
-            { "DAYTONA2POWEREDITION",       "DYT2PE" },
-            { "DAYTONAUSA2POWEREDITION",    "DYT2PE" },
+            // Fighting Vipers 2 - a Model 3 board, same netcode as the Model 2 fighters.
+            { "FIGHTINGVIPERS2",  "FGTVP2" },
+            { "FVIPERS2",         "FGTVP2" },
+            { "FV2",              "FGTVP2" },
+
+            // Sega Racing Classic 2, which is Daytona USA 2 under its re-release name - YAMP's own
+            // sources call it Daytona 2 throughout. Linked-cabinet, like Virtual On.
+            //
+            // ONE code covers the whole lineage, including the ROM factory's two Daytona USA 2
+            // variants. Splitting them looks safer and is not: YAMP boots them under a single
+            // GameId, so both would send the same key here and only ONE of the two spaces could
+            // ever be reached - the other would be an empty room list with no way to explain
+            // itself. A variant mismatch is the ROM-revision case below.
+            { "SEGARACINGCLASSIC2", "DYTNA2" },
+            { "SRC2",             "DYTNA2" },
+            { "DAYTONAUSA2",      "DYTNA2" },
+            { "DAYTONA2",         "DYTNA2" },
+
+            // Virtua Fighter 5: Final Showdown - the modern-widescreen odd one out, listed so it
+            // is not left to the hash if netplay ever reaches it.
+            { "VIRTUAFIGHTER5FINALSHOWDOWN", "VRTFT5" },
+            { "VIRTUAFIGHTER5",   "VRTFT5" },
+            { "VF5FS",            "VRTFT5" },
+            { "VF5FSLJ",          "VRTFT5" },
+            { "VF5FSYLAD",        "VRTFT5" },
         };
 
         // ON ROM REVISIONS. The granularity here is the GAME, so `vf2`, `vf2a` and `vf2b` share a
