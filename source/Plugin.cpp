@@ -23,6 +23,7 @@
 #include <cstring>
 #include <new>
 
+#include "Account.h"
 #include "ComId.h"
 #include "Lockstep.h"
 #include "PadCodec.h"
@@ -77,6 +78,10 @@ struct yampnet_session
     char error[256] = {};
 
     yampnet::RpcnTransport transport;
+    // Sign-up, which is not part of a session at all: its own connection, no login, and it never
+    // touches `state`. Living on the session is purely so it has somewhere to live and a log to
+    // write to - a player creating an account has no session yet by definition.
+    yampnet::AccountMaker account;
     yampnet::Lockstep lockstep;
     yampnet::PadHistory pads[yampnet::kMaxPlayers];
 
@@ -507,6 +512,19 @@ namespace
     yampnet_result ApiPoll(yampnet_session* s)
     {
         if (!s) return YAMPNET_ERR_ARG;
+
+        // BEFORE the early-out below, deliberately: a sign-up runs while the session is IDLE -
+        // that is its entire point - so pumping it after that test would mean it never advanced.
+        const auto account_before = s->account.GetState();
+        s->account.Update();
+        if (account_before != s->account.GetState())
+        {
+            if (s->account.GetState() == yampnet::AccountMaker::State::Created)
+                s->Log(YAMPNET_LOG_INFO, "account created");
+            else if (s->account.GetState() == yampnet::AccountMaker::State::Failed)
+                s->Log(YAMPNET_LOG_WARN, "account not created: %s", s->account.LastError());
+        }
+
         if (s->state == YAMPNET_STATE_IDLE || s->state == YAMPNET_STATE_FAILED)
             return YAMPNET_OK;
 
@@ -661,6 +679,48 @@ namespace
         s->Log(YAMPNET_LOG_INFO, "connecting to %s:%u as %s (com id %s)",
                cfg->server ? cfg->server : "?", tc.port, cfg->npid ? cfg->npid : "?", com_id);
         return YAMPNET_OK;
+    }
+
+    yampnet_result ApiCreateAccount(yampnet_session* s, const yampnet_account_config* cfg)
+    {
+        if (!s || !cfg) return YAMPNET_ERR_ARG;
+
+        yampnet::AccountMaker::Fields f;
+        f.npid = cfg->npid;
+        f.password = cfg->password;
+        f.email = cfg->email;
+        f.online_name = cfg->online_name;
+        f.avatar_url = cfg->avatar_url;
+
+        s->Log(YAMPNET_LOG_INFO, "creating account '%s' on %s", cfg->npid ? cfg->npid : "?",
+               cfg->server ? cfg->server : "?");
+
+        if (!s->account.Start(cfg->server, cfg->port, cfg->cert_fingerprint, f))
+        {
+            // Reported through get_account_error, NOT through the session's error: a rejected
+            // sign-up leaves the session exactly as it was and must not read as netplay failing.
+            s->Log(YAMPNET_LOG_WARN, "account not created: %s", s->account.LastError());
+            return YAMPNET_ERR_NETWORK;
+        }
+        return YAMPNET_OK;
+    }
+
+    yampnet_account_state ApiGetAccountState(yampnet_session* s)
+    {
+        if (!s) return YAMPNET_ACCOUNT_IDLE;
+        switch (s->account.GetState())
+        {
+        case yampnet::AccountMaker::State::Working: return YAMPNET_ACCOUNT_WORKING;
+        case yampnet::AccountMaker::State::Created: return YAMPNET_ACCOUNT_CREATED;
+        case yampnet::AccountMaker::State::Failed:  return YAMPNET_ACCOUNT_FAILED;
+        default:                                    return YAMPNET_ACCOUNT_IDLE;
+        }
+    }
+
+    const char* ApiGetAccountError(yampnet_session* s)
+    {
+        return (s && s->account.GetState() == yampnet::AccountMaker::State::Failed)
+             ? s->account.LastError() : "";
     }
 
     yampnet_result ApiDisconnect(yampnet_session* s)
@@ -1038,6 +1098,9 @@ namespace
         &ApiLinkReady,
         &ApiLinkSend,
         &ApiLinkTake,
+        &ApiCreateAccount,
+        &ApiGetAccountState,
+        &ApiGetAccountError,
     };
 }
 

@@ -34,6 +34,7 @@ Two netcodes, chosen per game by what the board actually needs:
 | Lockstep engine | `source/Lockstep.{h,cpp}` |
 | Pad encode/decode (the determinism rule) | `source/PadCodec.{h,cpp}` |
 | RPCN client — login, rooms, signaling | `source/RpcnClient.{h,cpp}`, `source/RpcnTransport.{h,cpp}` |
+| Account registration | `source/Account.{h,cpp}` |
 | Per-game Communication IDs | `source/ComId.{h,cpp}` |
 | RPCN's protobuf wire format | `source/Protobuf.{h,cpp}` |
 | Schannel TLS | `source/TlsClient.{h,cpp}` |
@@ -193,7 +194,25 @@ its own, and a mismatch is refused cleanly at load time. That is the backstop fo
 only one of the two halves got rebuilt — without it, a stale plugin would write pad bytes at the
 wrong offsets into the emulator's memory. Keep it honest when either layout changes.
 
-`YAMPNET_ABI_VERSION` is checked the same way, and is currently **10**.
+`YAMPNET_ABI_VERSION` is checked the same way, and is currently **11**.
+
+## Signing up
+
+RPCN's `Create` command runs on its own connection and before any login, so the plugin can
+register an account for a player who has none — which is otherwise a strange first step for
+someone whose only PlayStation-anything is this emulator. `Account.{h,cpp}` is that: one
+connection, one request, one reply, with its own timeout so a server that accepts the socket and
+then says nothing still resolves to an error a UI can show.
+
+It is deliberately not part of `RpcnTransport`. That class is a logged-in session with discovery,
+a room, a signaling socket and a peer — none of which exist yet, and none of which a sign-up
+should be able to disturb. Nothing here touches `get_state()`: a session that is IDLE stays IDLE
+while an account is being made.
+
+The server requires five non-empty strings and YAMP asks for three of them. The online name
+defaults to the account name, and the avatar URL to this project's page — a second display name is
+a question with no useful answer for someone with one account, and an avatar is a URL nobody has
+to hand.
 
 ## History
 
