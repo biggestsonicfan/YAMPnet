@@ -241,6 +241,98 @@ namespace yampnet
         return true;
     }
 
+    uint64_t RpcnClient::TwitchDeviceStart()
+    {
+        // No payload at all: the server needs nothing from us to ask Twitch for a device code.
+        return Request(RpcnCommand::TwitchDeviceStart, nullptr, 0);
+    }
+
+    uint64_t RpcnClient::TwitchDevicePoll(const char* flow_id)
+    {
+        // Read with get_string(false) at the server, so an empty one is Malformed - which on
+        // this command is indistinguishable from "this server has never heard of it".
+        if (!flow_id || !*flow_id)
+        {
+            Fail("TwitchDevicePoll: no flow id to poll");
+            return 0;
+        }
+
+        StringPacker p;
+        p.Put(flow_id);
+        if (!p.ok)
+        {
+            Fail("TwitchDevicePoll: flow id too long");
+            return 0;
+        }
+        return Request(RpcnCommand::TwitchDevicePoll, p.buf, p.n);
+    }
+
+    namespace
+    {
+        // Takes the next NUL-terminated string out of a reply payload, advancing `at`. False on
+        // a string that runs off the end of the payload or does not fit `cap` - never a partial
+        // copy, because every string here is a credential that means nothing when clipped.
+        bool TakeString(const uint8_t* p, uint32_t size, uint32_t* at, char* out, uint32_t cap)
+        {
+            uint32_t n = 0;
+            while (*at + n < size && p[*at + n] != 0)
+                ++n;
+            if (*at + n >= size)   // no terminator inside the payload
+                return false;
+            if (n + 1 > cap)
+                return false;
+            if (n) memcpy(out, p + *at, n);
+            out[n] = 0;
+            *at += n + 1;
+            return true;
+        }
+    }
+
+    bool RpcnClient::ParseTwitchDeviceCode(const uint8_t* payload, uint32_t size,
+                                           TwitchDeviceCode* out)
+    {
+        if (!payload || !out)
+            return false;
+        *out = TwitchDeviceCode{};
+
+        uint32_t at = 0;
+        if (!TakeString(payload, size, &at, out->flow_id, sizeof(out->flow_id))
+            || !TakeString(payload, size, &at, out->user_code, sizeof(out->user_code))
+            || !TakeString(payload, size, &at, out->verification_uri,
+                           sizeof(out->verification_uri)))
+        {
+            return false;
+        }
+        if (at + 8 > size)
+            return false;
+
+        out->expires_in = GetU32(payload + at);
+        out->interval = GetU32(payload + at + 4);
+        // A flow with no id cannot be polled, so it is not a reply this can work with even
+        // though it parsed.
+        return out->flow_id[0] != 0;
+    }
+
+    bool RpcnClient::ParseTwitchCredentials(const uint8_t* payload, uint32_t size,
+                                             TwitchCredentials* out)
+    {
+        if (!payload || !out)
+            return false;
+        *out = TwitchCredentials{};
+
+        uint32_t at = 0;
+        if (!TakeString(payload, size, &at, out->npid, sizeof(out->npid))
+            || !TakeString(payload, size, &at, out->online_name, sizeof(out->online_name))
+            || !TakeString(payload, size, &at, out->avatar_url, sizeof(out->avatar_url))
+            || !TakeString(payload, size, &at, out->login_token, sizeof(out->login_token)))
+        {
+            return false;
+        }
+        // Either one missing leaves nothing to log in with, which is the only thing this reply
+        // is for.
+        return out->npid[0] != 0 && out->login_token[0] != 0;
+    }
+
     uint64_t RpcnClient::CreateAccount(const char* npid, const char* password,
                                        const char* online_name, const char* avatar_url,
                                        const char* email)

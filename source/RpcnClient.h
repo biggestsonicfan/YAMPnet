@@ -42,6 +42,11 @@ namespace yampnet
         SetRoomDataInternal = 21,
         SetRoomMemberDataInternal = 23,
         RequestSignalingInfos = 27,
+        // The Twitch OAuth device flow. Unauthentified like Login and Create, and NOT gated
+        // behind a protocol version bump on the server, so the only way to learn whether a
+        // server has them is to ask - see TwitchAuth.h for what the two answers look like.
+        TwitchDeviceStart = 63,
+        TwitchDevicePoll = 64,
     };
 
     // Values match the server's ErrorType enum exactly (declaration order). The whole enum is
@@ -87,6 +92,14 @@ namespace yampnet
         ScoreHasData = 31,
         CondFail = 32,
         Unsupported = 33,
+        // Twitch sign-in. NONE of these close the connection, deliberately, so a client that
+        // offers both login methods can fall back to a password on the same one.
+        TwitchDisabled = 34,
+        TwitchAuthPending = 35,
+        TwitchAuthSlowDown = 36,
+        TwitchAuthExpired = 37,
+        TwitchAuthDenied = 38,
+        TwitchAuthError = 39,
     };
 
     // Server-pushed notifications (packet_type 2). Values are the declaration order of the
@@ -161,6 +174,44 @@ namespace yampnet
         // True when `token` is exactly what the server mails. For WARNING a player that what they
         // pasted does not look like a token - never for refusing to send it.
         static bool LooksLikeToken(const char* token);
+
+        // --- Twitch sign-in -----------------------------------------------------------------
+        // The device code grant, which lets a player reach RPCN with a Twitch login instead of
+        // an account made here. Both commands are unauthentified, and both are answered rather
+        // than disconnected on, so a refusal leaves the session able to log in with a password.
+        // TwitchAuth.h drives them; this is only the framing.
+
+        // No payload. The reply is a device code to show the player - or TwitchDisabled(34) on
+        // a server without the feature configured, or Malformed(1) and a hang-up on one too
+        // old to know the command at all.
+        uint64_t TwitchDeviceStart();
+        // One string: the opaque flow id from the start reply. The device code itself never
+        // leaves the server. Answers TwitchAuthPending(35) until the player has finished in
+        // the browser.
+        uint64_t TwitchDevicePoll(const char* flow_id);
+
+        struct TwitchDeviceCode
+        {
+            char flow_id[64];             // opaque; pass it back verbatim
+            char user_code[32];           // what the player types on the verification page
+            char verification_uri[256];   // twitch.tv, with the code already in the query
+            uint32_t expires_in;          // seconds; the server caps it at 1800
+            uint32_t interval;            // minimum seconds between polls
+        };
+        struct TwitchCredentials
+        {
+            char npid[20];                // the account name to log in with from now on
+            char online_name[20];
+            char avatar_url[256];
+            char login_token[64];         // 32 hex chars, used IN PLACE OF the password
+        };
+        // Both return false rather than truncating. A clipped flow id or login token would be
+        // sent back to the server as though it were whole, and fail as a wrong credential
+        // rather than as the protocol mismatch it is.
+        static bool ParseTwitchDeviceCode(const uint8_t* payload, uint32_t size,
+                                          TwitchDeviceCode* out);
+        static bool ParseTwitchCredentials(const uint8_t* payload, uint32_t size,
+                                           TwitchCredentials* out);
 
         // Sends Create to register an account. Server rules, worth knowing before you call:
         //   * npid and online_name must be 3-16 chars of [A-Za-z0-9_-].

@@ -35,6 +35,7 @@ Two netcodes, chosen per game by what the board actually needs:
 | Pad encode/decode (the determinism rule) | `source/PadCodec.{h,cpp}` |
 | RPCN client — login, rooms, signaling | `source/RpcnClient.{h,cpp}`, `source/RpcnTransport.{h,cpp}` |
 | Account registration | `source/Account.{h,cpp}` |
+| Twitch sign-in (OAuth device flow) | `source/TwitchAuth.{h,cpp}` |
 | Per-game Communication IDs | `source/ComId.{h,cpp}` |
 | RPCN's protobuf wire format | `source/Protobuf.{h,cpp}` |
 | Schannel TLS | `source/TlsClient.{h,cpp}` |
@@ -194,7 +195,7 @@ its own, and a mismatch is refused cleanly at load time. That is the backstop fo
 only one of the two halves got rebuilt — without it, a stale plugin would write pad bytes at the
 wrong offsets into the emulator's memory. Keep it honest when either layout changes.
 
-`YAMPNET_ABI_VERSION` is checked the same way, and is currently **12**.
+`YAMPNET_ABI_VERSION` is checked the same way, and is currently **13**.
 
 ## Signing up
 
@@ -248,6 +249,61 @@ It authenticates on the account name and password with `check_token = false` —
 the token to ask for the token, which is the entire point of the command. The server refuses it
 outright (`Invalid`) if it does no e-mail validation, and once per account per 24 hours
 (`TooSoon`); both arrive as a message rather than a state of their own.
+
+## Signing in with Twitch
+
+Everything above assumes an RPCN account, and an account is a thing someone has to be talked
+into making. RPCN also accepts an [OAuth device code](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow)
+grant against Twitch, which skips the question entirely for a player who already has a Twitch
+login — and for an arcade emulator that is most of them. `TwitchAuth.{h,cpp}` is the client
+half.
+
+The exchange is two commands, both unauthenticated like `Create`, on their own connection:
+
+```
+TwitchDeviceStart      ->  flow_id, user_code, verification_uri, expires_in, interval
+  show the code, open the page, then every `interval` seconds:
+TwitchDevicePoll(flow) ->  TwitchAuthPending ... until it is not
+  on success:              npid, online_name, avatar_url, login_token
+```
+
+**The login token is the password from then on.** It goes in
+`yampnet_rpcn_config::password`, the verification token field stays empty — a login that
+arrives on a Twitch token is not checked against one — and `connect()` needs no change at all.
+That is the whole reason this is usable from a game: the browser trip happens once, not once
+per session. A completed flow issues a *fresh* token and invalidates the one before it, so it
+is the credential rather than a second one kept alongside a password.
+
+No Twitch credential ever reaches the plugin. The server does the talking to Twitch and keeps
+the device code; a client only ever holds an opaque flow id and a code to put on screen.
+
+### Waiting is the normal state
+
+Every other request in this plugin resolves in a round trip. This one waits for a person to
+find a browser, so `WAITING` can legitimately last until the code expires — half an hour — and
+a timeout that "always resolves" would be the bug rather than the safeguard. What is bounded
+is everything either side of it: the device request, each individual poll, and the code itself.
+
+Polling is paced by the interval the server hands out, which is also what keeps the connection
+alive: an unauthenticated socket normally gets ten seconds between packets, and RPCN relaxes
+that to 120 once a flow is running.
+
+### A server that does not offer it
+
+This is deliberately **not** behind a protocol version bump on the server side, so an unpatched
+client still connects to a patched server and vice versa. The cost is that there is no way to
+ask whether a server has the feature — only to try it — and the two ways of finding out are
+different:
+
+* a server with it compiled in but not configured answers `TwitchDisabled` (34) and keeps the
+  connection,
+* a server that predates it does not know command 63 at all, answers `Malformed` and **hangs
+  up**.
+
+Both land in `YAMPNET_TWITCH_UNSUPPORTED`, which is a state of its own rather than a failure:
+the answer to either is to offer the password boxes, not to show an error about something
+nobody did wrong. Every *other* Twitch error code leaves the connection open on purpose, so a
+refused sign-in never costs a player the ability to log in the ordinary way.
 
 ## History
 

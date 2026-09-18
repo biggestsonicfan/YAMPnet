@@ -29,6 +29,7 @@
 #include "PadCodec.h"
 #include "RpcnTransport.h"
 #include "Transport.h"
+#include "TwitchAuth.h"
 #include "m2ftg/m2ftg.h"
 
 namespace
@@ -82,6 +83,11 @@ struct yampnet_session
     // touches `state`. Living on the session is purely so it has somewhere to live and a log to
     // write to - a player creating an account has no session yet by definition.
     yampnet::AccountMaker account;
+    // Signing in WITH a Twitch account rather than making one, on the same terms: its own
+    // connection, no login, and the session is not touched. It lives longer than a sign-up
+    // does - the player is in a browser - which is the only reason it is a second object and
+    // not another job on AccountMaker.
+    yampnet::TwitchLogin twitch;
     yampnet::Lockstep lockstep;
     yampnet::PadHistory pads[yampnet::kMaxPlayers];
 
@@ -529,6 +535,35 @@ namespace
                        s->account.LastError());
         }
 
+        // Same placement and the same reason: a Twitch sign-in runs while the session is
+        // IDLE, so pumping it after the early-out below would mean it never advanced. It also
+        // has to be pumped every frame rather than on a timer - the poll interval is the
+        // server's, and Update() is what enforces it.
+        const auto twitch_before = s->twitch.GetState();
+        s->twitch.Update();
+        if (twitch_before != s->twitch.GetState())
+        {
+            switch (s->twitch.GetState())
+            {
+            case yampnet::TwitchLogin::State::Waiting:
+                // The log is the fallback for a UI that could not open a browser, so it
+                // carries the code and the page. It never carries the login token.
+                s->Log(YAMPNET_LOG_INFO, "twitch sign-in: enter code %s at %s",
+                       s->twitch.UserCode(), s->twitch.VerificationUri());
+                break;
+            case yampnet::TwitchLogin::State::Done:
+                s->Log(YAMPNET_LOG_INFO, "twitch sign-in complete: account %s (%s)",
+                       s->twitch.Npid(), s->twitch.OnlineName());
+                break;
+            case yampnet::TwitchLogin::State::Unsupported:
+            case yampnet::TwitchLogin::State::Failed:
+                s->Log(YAMPNET_LOG_WARN, "twitch sign-in: %s", s->twitch.LastError());
+                break;
+            default:
+                break;
+            }
+        }
+
         if (s->state == YAMPNET_STATE_IDLE || s->state == YAMPNET_STATE_FAILED)
             return YAMPNET_OK;
 
@@ -750,6 +785,74 @@ namespace
     {
         return (s && s->account.GetState() == yampnet::AccountMaker::State::Failed)
              ? s->account.LastError() : "";
+    }
+
+    yampnet_result ApiTwitchLogin(yampnet_session* s, const yampnet_twitch_config* cfg)
+    {
+        if (!s || !cfg) return YAMPNET_ERR_ARG;
+
+        s->Log(YAMPNET_LOG_INFO, "starting a twitch sign-in on %s",
+               cfg->server ? cfg->server : "?");
+
+        if (!s->twitch.Start(cfg->server, cfg->port, cfg->cert_fingerprint))
+        {
+            // Reported through get_twitch_error, NOT the session error, for the reason a
+            // rejected sign-up is: this leaves the session exactly as it was and must not
+            // read as netplay failing.
+            s->Log(YAMPNET_LOG_WARN, "twitch sign-in not started: %s", s->twitch.LastError());
+            return YAMPNET_ERR_NETWORK;
+        }
+        return YAMPNET_OK;
+    }
+
+    yampnet_result ApiTwitchLoginCancel(yampnet_session* s)
+    {
+        if (!s) return YAMPNET_ERR_ARG;
+        if (s->twitch.GetState() != yampnet::TwitchLogin::State::Idle)
+            s->Log(YAMPNET_LOG_INFO, "twitch sign-in cancelled");
+        s->twitch.Cancel();
+        return YAMPNET_OK;
+    }
+
+    yampnet_twitch_state ApiGetTwitchState(yampnet_session* s)
+    {
+        if (!s) return YAMPNET_TWITCH_IDLE;
+        switch (s->twitch.GetState())
+        {
+        case yampnet::TwitchLogin::State::Starting:    return YAMPNET_TWITCH_STARTING;
+        case yampnet::TwitchLogin::State::Waiting:     return YAMPNET_TWITCH_WAITING;
+        case yampnet::TwitchLogin::State::Done:        return YAMPNET_TWITCH_DONE;
+        case yampnet::TwitchLogin::State::Failed:      return YAMPNET_TWITCH_FAILED;
+        case yampnet::TwitchLogin::State::Unsupported: return YAMPNET_TWITCH_UNSUPPORTED;
+        default:                                      return YAMPNET_TWITCH_IDLE;
+        }
+    }
+
+    int32_t ApiGetTwitchInfo(yampnet_session* s, yampnet_twitch_info* out)
+    {
+        if (!s || !out) return 0;
+        // All of these point into the session and stay valid until the next poll(), which is
+        // what the header promises. They are filled whatever the state is, because the fields
+        // that do not apply are already empty strings - a caller that reads npid while WAITING
+        // gets "", not a stale one from an earlier attempt, because Start() clears them.
+        out->user_code = s->twitch.UserCode();
+        out->verification_uri = s->twitch.VerificationUri();
+        out->seconds_remaining = s->twitch.SecondsRemaining();
+        out->npid = s->twitch.Npid();
+        out->online_name = s->twitch.OnlineName();
+        out->login_token = s->twitch.LoginToken();
+        return 1;
+    }
+
+    const char* ApiGetTwitchError(yampnet_session* s)
+    {
+        if (!s) return "";
+        // UNSUPPORTED carries a message too, and it is worth showing: "this server is too old"
+        // and "this server has the feature switched off" are different things to do next.
+        const auto st = s->twitch.GetState();
+        return (st == yampnet::TwitchLogin::State::Failed
+                || st == yampnet::TwitchLogin::State::Unsupported)
+             ? s->twitch.LastError() : "";
     }
 
     yampnet_result ApiDisconnect(yampnet_session* s)
@@ -1131,6 +1234,11 @@ namespace
         &ApiGetAccountState,
         &ApiGetAccountError,
         &ApiResendToken,
+        &ApiTwitchLogin,
+        &ApiTwitchLoginCancel,
+        &ApiGetTwitchState,
+        &ApiGetTwitchInfo,
+        &ApiGetTwitchError,
     };
 }
 
