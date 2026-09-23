@@ -37,6 +37,25 @@ namespace yampnet
         }
     }
 
+    bool IsOfficialRpcnServer(const char* server)
+    {
+        if (!server)
+            return false;
+        const size_t n = strlen(kRpcnOfficialServer);
+        return _strnicmp(server, kRpcnOfficialServer, n) == 0
+            && (server[n] == '\0' || (server[n] == '.' && server[n + 1] == '\0'));
+    }
+
+    bool ResolveServerPin(const char* server, const char* fingerprint_hex, CertFingerprint* out)
+    {
+        *out = CertFingerprint();
+        if (fingerprint_hex && *fingerprint_hex)
+            return out->FromHex(fingerprint_hex);
+        if (IsOfficialRpcnServer(server))
+            out->FromHex(kRpcnOfficialFingerprint);
+        return true;
+    }
+
     void RpcnClient::Fail(const char* fmt, ...)
     {
         va_list args;
@@ -49,6 +68,7 @@ namespace yampnet
     {
         m_error[0] = '\0';
         m_in_used = 0;
+        m_in_consumed = 0;
         m_next_packet_id = 1;
 
         m_signaling_addr = 0;
@@ -86,7 +106,10 @@ namespace yampnet
             closesocket(static_cast<SOCKET>(m_udp));
             m_udp = static_cast<uintptr_t>(~0ull);
         }
+        m_local_port = 0;
+        m_local_ip = 0;
         m_in_used = 0;
+        m_in_consumed = 0;
     }
 
     uint64_t RpcnClient::Request(RpcnCommand cmd, const void* payload, uint32_t payload_size)
@@ -962,6 +985,14 @@ namespace yampnet
         if (!out || !m_tls.IsConnected())
             return false;
 
+        // The packet handed out last time is only dropped now that its reader is done with it.
+        if (m_in_consumed)
+        {
+            memmove(m_in, m_in + m_in_consumed, m_in_used - m_in_consumed);
+            m_in_used -= m_in_consumed;
+            m_in_consumed = 0;
+        }
+
         for (;;)
         {
             // Do we already hold a complete packet?
@@ -1012,10 +1043,9 @@ namespace yampnet
                             m_user_id = static_cast<int64_t>(GetU64(out->payload + at));
                     }
 
-                    // Slide the remainder down. The caller's payload pointer stays valid only
-                    // until the next Poll(), which is documented.
-                    memmove(m_in, m_in + size, m_in_used - size);
-                    m_in_used -= size;
+                    // Leave it where it is: `out->payload` points at it. The next Poll() slides
+                    // it off (see m_in_consumed).
+                    m_in_consumed = size;
                     return true;
                 }
             }
@@ -1099,6 +1129,7 @@ namespace yampnet
         }
 
         m_udp = static_cast<uintptr_t>(s);
+        m_local_port = local_port;
         return true;
     }
 
@@ -1119,8 +1150,9 @@ namespace yampnet
 
         // Our LAN address, so the server can hand peers a local address when we share a public IP.
         // Must be the real interface address - see LocalIpv4Towards.
-        const uint32_t local_ip = LocalIpv4Towards(m_signaling_addr);
-        memcpy(pkt + 9, &local_ip, 4);
+        // Asked again on every keepalive, so a machine that changes network reports the new one.
+        m_local_ip = LocalIpv4Towards(m_signaling_addr);
+        memcpy(pkt + 9, &m_local_ip, 4);
 
         sockaddr_in dst = {};
         dst.sin_family = AF_INET;

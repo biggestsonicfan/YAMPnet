@@ -120,8 +120,27 @@ namespace yampnet
     inline constexpr uint16_t kRpcnSignalingPort = 3657;   // server-side UDP helper
     inline constexpr uint16_t kRpcnP2PPort = 3658;         // peer-to-peer game traffic
 
+    // The official RPCN server, the one RPCS3 itself signs in to. Its certificate is RPCN's own
+    // `--cert-gen` self-signed one (CN=RPCN, valid to 2030-07-21), so VALIDATED mode can never
+    // accept it and a player who typed only the host name could not reach it at all. Its pin is
+    // therefore built in, as m2-hle2 does (NETPLAY_OFFICIAL_FINGERPRINT). Re-check it with
+    //   openssl s_client -connect np.rpcs3.net:31313 </dev/null | openssl x509 -noout -fingerprint -sha256
+    // The official server has no Twitch sign-in; accounts there are an npid and a password, and
+    // they are its own - an account on any other server does not exist there.
+    inline constexpr const char* kRpcnOfficialServer = "np.rpcs3.net";
+    inline constexpr const char* kRpcnOfficialFingerprint =
+        "7028AD2117139EEA9E1FE14713D0CB4FCD8815B2F39AB4E10FF6725A38AFD155";
+
+    // True when `server` names the official server (case-insensitive, a trailing dot allowed).
+    bool IsOfficialRpcnServer(const char* server);
+
+    // The pin to connect to `server` with: the player's own fingerprint when there is one, else
+    // the built-in pin for a server this plugin knows is self-signed, else none (VALIDATED mode).
+    // False only when the player's fingerprint is not 64 hex characters.
+    bool ResolveServerPin(const char* server, const char* fingerprint_hex, CertFingerprint* out);
+
     // A decoded inbound packet. `payload` points into the client's buffer and is only valid until
-    // the next Poll().
+    // the next Poll() - which is also when that buffer is slid down, never before.
     struct RpcnPacket
     {
         uint8_t type = 0;
@@ -182,8 +201,9 @@ namespace yampnet
         // TwitchAuth.h drives them; this is only the framing.
 
         // No payload. The reply is a device code to show the player - or TwitchDisabled(34) on
-        // a server without the feature configured, or Malformed(1) and a hang-up on one too
-        // old to know the command at all.
+        // a server without the feature configured, Malformed(1) and a hang-up on one too old to
+        // know the command at all, or Invalid(2) on one where 63 is some other command (the
+        // official np.rpcs3.net).
         uint64_t TwitchDeviceStart();
         // One string: the opaque flow id from the start reply. The device code itself never
         // leaves the server. Answers TwitchAuthPending(35) until the player has finished in
@@ -346,6 +366,12 @@ namespace yampnet
         // True if this datagram came from the RPCN signaling helper rather than a peer.
         bool IsSignalingSource(uint32_t ipv4_be, uint16_t port) const
         { return ipv4_be == m_signaling_addr && port == kRpcnSignalingPort; }
+        // True if this datagram came from our OWN socket. When two peers share a public IPv4,
+        // RPCN hands each the other's LAN address with port 3658 HARDCODED (room_manager.rs and
+        // cmd_misc.rs), so two clients on one machine are told to punch at their own socket - and
+        // the first punch that loops back would be taken for the peer.
+        bool IsOwnAddress(uint32_t ipv4_be, uint16_t port) const
+        { return m_local_ip != 0 && ipv4_be == m_local_ip && port == m_local_port; }
         // Decodes a signaling reply body (the 9/21-byte form). Returns false if it is not one.
         static bool ParseSignalingReply(const void* buf, uint32_t len,
                                         uint32_t* out_ipv4_be, uint16_t* out_port);
@@ -363,8 +389,15 @@ namespace yampnet
         // Inbound reassembly: TLS gives us a byte stream, packets can straddle records.
         uint8_t m_in[64 * 1024] = {};
         uint32_t m_in_used = 0;
+        // Size of the packet the last Poll() handed out. It is slid off the front of m_in at the
+        // START of the next Poll(): sliding it at once moved the next packet's bytes under the
+        // payload pointer the caller was about to read, so a reply that arrived in the same read
+        // as a notification was parsed as the notification (m2-hle2 lost every room join to it).
+        uint32_t m_in_consumed = 0;
 
         uintptr_t m_udp = static_cast<uintptr_t>(~0ull);
+        uint16_t m_local_port = 0;       // what OpenSignaling bound
+        uint32_t m_local_ip = 0;         // LAN address the last keepalive reported, network order
         // The signaling helper lives on the SAME host as the TLS server but on UDP 3657, so the
         // address is resolved once at Connect() and reused for every keepalive.
         uint32_t m_signaling_addr = 0;   // in_addr, network byte order

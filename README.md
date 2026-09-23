@@ -197,6 +197,26 @@ wrong offsets into the emulator's memory. Keep it honest when either layout chan
 
 `YAMPNET_ABI_VERSION` is checked the same way, and is currently **13**.
 
+## The official server
+
+YAMP can sign in to the official RPCN server as well as ours. That is **np.rpcs3.net**, the one
+RPCS3 itself uses. m2-hle2 works this way too. Three things are different there:
+
+* **Its certificate is self-signed** (`CN=RPCN`, valid to 2030-07-21), so the ordinary check
+  used when no fingerprint is set can never accept it. Its pin is built into the plugin
+  (`kRpcnOfficialFingerprint`) and is used whenever the player has not set one of their own, so
+  the host name is all anyone has to type. A fingerprint the player sets still wins.
+* **It has no Twitch sign-in** (see [below](#a-server-that-does-not-offer-it)). Accounts there are
+  an npid and a password.
+* **Accounts belong to one server.** An account on ours does not exist there, and neither does a
+  Twitch login token. A token is a password, so it must only ever go to the server that issued it.
+  The plugin does not store credentials; YAMP does, and keeping each one with its own server is
+  YAMP's job.
+
+The lobbies are still YAMP's own. Every ComId is in the `YMP` namespace (see
+[above](#one-lobby-space-per-game)), so a YAMP room never shows up in RPCS3's lobbies and theirs
+never show up in ours, on either server.
+
 ## Signing up
 
 RPCN's `Create` command runs on its own connection and before any login, so the plugin can
@@ -292,16 +312,20 @@ that to 120 once a flow is running.
 
 This is deliberately **not** behind a protocol version bump on the server side, so an unpatched
 client still connects to a patched server and vice versa. The cost is that there is no way to
-ask whether a server has the feature — only to try it — and the two ways of finding out are
+ask whether a server has the feature — only to try it — and the three ways of finding out are
 different:
 
 * a server with it compiled in but not configured answers `TwitchDisabled` (34) and keeps the
   connection,
 * a server that predates it does not know command 63 at all, answers `Malformed` and **hangs
-  up**.
+  up**,
+* a server whose command 63 is some *other* command answers `Invalid` (2), which is what a
+  client that has not logged in gets for any command it may not send yet, and keeps the
+  connection. That is the official server, np.rpcs3.net. A server with Twitch never answers the
+  start with `Invalid`.
 
-Both land in `YAMPNET_TWITCH_UNSUPPORTED`, which is a state of its own rather than a failure:
-the answer to either is to offer the password boxes, not to show an error about something
+All three land in `YAMPNET_TWITCH_UNSUPPORTED`, which is a state of its own rather than a failure:
+the answer to any of them is to offer the password boxes, not to show an error about something
 nobody did wrong. Every *other* Twitch error code leaves the connection open on purpose, so a
 refused sign-in never costs a player the ability to log in the ordinary way.
 

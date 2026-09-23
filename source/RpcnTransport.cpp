@@ -25,6 +25,13 @@ namespace yampnet
 
         constexpr uint64_t kSignalingRetryMs = 2000;
 
+        // How long discovery waits for the signaling helper to answer a keepalive before calling
+        // the session Online anyway. The server copies each member's address into a room when the
+        // room is created or joined, and never refreshes it - so a room taken before our first
+        // keepalive has landed carries no address for us for its whole life. m2-hle2's
+        // NETPLAY_ROOM_WAIT_MS, found by a script that hosted 0.2 s after signing in.
+        constexpr uint64_t kAddressWaitMs = 4000;
+
         // Not a game packet: shorter than a PacketHeader, so the lockstep layer discards it even
         // if one is delivered. Its only job is to make our NAT create a mapping towards the peer.
         constexpr uint8_t kPunchPacket[4] = { 'Y', 'N', 'P', '!' };
@@ -98,6 +105,16 @@ namespace yampnet
         if (!ip || !port)
             return;
         const bool changed = (ip != m_peer_ip || port != m_peer_port);
+        // An address the peer has actually been HEARD from beats anything the server reports
+        // later. The server's idea can be a different kind of address altogether (a LAN one with
+        // port 3658 for two players behind one public IPv4), and adopting it while m_peer_heard
+        // stays set would make Recv() drop every real datagram from the peer as a stray.
+        if (m_peer_heard && changed)
+        {
+            Note("server reports %s at another address (via %s); keeping %s, which it is heard "
+                 "from", m_peer_npid[0] ? m_peer_npid : "the peer", source, PeerAddrText());
+            return;
+        }
         m_peer_ip = ip;
         m_peer_port = port;
         m_signaling_retry_ms = 0;
@@ -161,7 +178,7 @@ namespace yampnet
         }
 
         CertFingerprint pin;
-        if (cfg.fingerprint_hex && *cfg.fingerprint_hex && !pin.FromHex(cfg.fingerprint_hex))
+        if (!ResolveServerPin(cfg.server, cfg.fingerprint_hex, &pin))
         {
             Fail("bad certificate fingerprint");
             return false;
@@ -207,6 +224,9 @@ namespace yampnet
         m_pending_search = 0;
         m_signaling_retry_ms = 0;
         m_last_punch_ms = 0;
+        m_last_keepalive_ms = 0;
+        m_address_seen = false;
+        m_address_deadline_ms = 0;
         m_room_count = 0;
         m_error[0] = '\0';
     }
@@ -220,6 +240,23 @@ namespace yampnet
             return;
         m_last_keepalive_ms = now;
         m_client.SendSignalingPing();
+    }
+
+    void RpcnTransport::PumpAddressWait()
+    {
+        // m_address_seen is set by Recv(), which the plugin drains the socket through every poll.
+        if (m_stage != Stage::LoggingIn || m_address_deadline_ms == 0)
+            return;
+
+        if (!m_address_seen)
+        {
+            if (GetTickCount64() < m_address_deadline_ms)
+                return;
+            Note("the server's UDP helper has not answered (is UDP %u blocked?); going on anyway",
+                 static_cast<unsigned>(kRpcnSignalingPort));
+        }
+        m_address_deadline_ms = 0;
+        m_stage = Stage::Online;
     }
 
     void RpcnTransport::PumpPunch()
@@ -381,7 +418,9 @@ namespace yampnet
                     return false;
                 }
                 m_world_id = worlds[0];
-                m_stage = Stage::Online;
+                // Online once the server has seen our UDP address, not before - see
+                // kAddressWaitMs. PumpAddressWait() makes the move.
+                m_address_deadline_ms = GetTickCount64() + kAddressWaitMs;
                 continue;
             }
 
@@ -506,6 +545,7 @@ namespace yampnet
 
         PumpReplies();
         PumpKeepalive();
+        PumpAddressWait();
         PumpSignalingRetry();
         PumpPunch();
     }
@@ -578,6 +618,12 @@ namespace yampnet
             // Signaling replies share this socket; route them by SOURCE rather than by content,
             // since a signaling reply's leading bytes can look exactly like a game packet header.
             if (m_client.IsSignalingSource(ip, port))
+            {
+                m_address_seen = true;   // the server has our UDP address - see PumpAddressWait
+                continue;
+            }
+            // Our own punch, looped back: see RpcnClient::IsOwnAddress.
+            if (m_client.IsOwnAddress(ip, port))
                 continue;
 
             if (!m_peer_heard)
