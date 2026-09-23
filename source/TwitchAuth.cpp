@@ -77,6 +77,13 @@ namespace yampnet
         {
             m_error[0] = '\0';
         }
+        if (state == State::Unsupported && m_official)
+        {
+            const size_t used = strlen(m_error);
+            snprintf(m_error + used, sizeof(m_error) - used,
+                     " - %s is RPCS3's official server; sign in there with an npid and password",
+                     kRpcnOfficialServer);
+        }
 
         m_state = state;
         m_pending = 0;
@@ -99,6 +106,7 @@ namespace yampnet
         m_flow_deadline_ms = 0;
         m_next_poll_ms = 0;
         m_interval_s = kDefaultIntervalS;
+        m_official = false;
         m_error[0] = '\0';
     }
 
@@ -113,6 +121,7 @@ namespace yampnet
     bool TwitchLogin::Start(const char* server, uint16_t port, const char* fingerprint_hex)
     {
         Reset();
+        m_official = IsOfficialRpcnServer(server);
 
         if (!server || !*server)
         {
@@ -121,7 +130,7 @@ namespace yampnet
         }
 
         CertFingerprint pin;
-        if (fingerprint_hex && *fingerprint_hex && !pin.FromHex(fingerprint_hex))
+        if (!ResolveServerPin(server, fingerprint_hex, &pin))
         {
             Finish(State::Failed, "bad certificate fingerprint");
             return false;
@@ -161,6 +170,13 @@ namespace yampnet
         if (pkt.error == RpcnError::Malformed)
         {
             Finish(State::Unsupported, "this server is too old to know about Twitch sign-in");
+            return;
+        }
+        // A server whose command 63 is something else, which a client that has not logged in may
+        // not send. twitch_device_start never answers Invalid, so this is not a Twitch refusal.
+        if (pkt.error == RpcnError::Invalid)
+        {
+            Finish(State::Unsupported, "this server does not offer Twitch sign-in");
             return;
         }
         if (pkt.error != RpcnError::NoError)

@@ -63,7 +63,7 @@ namespace yampnet
         enum class Stage
         {
             Idle,
-            LoggingIn,
+            LoggingIn,       // through discovery, and until the server has seen our UDP address
             Online,          // logged in, discovery done
             Hosting,         // room created, nobody has joined yet
             Joining,         // room joined, resolving the host
@@ -121,6 +121,7 @@ namespace yampnet
         void Note(const char* fmt, ...);
         bool PumpReplies();
         void PumpKeepalive();
+        void PumpAddressWait();
         void PumpPunch();
         void PumpSignalingRetry();
         void OnNotification(const RpcnPacket& pkt);
@@ -166,6 +167,10 @@ namespace yampnet
         // A signaling lookup is retried rather than fatal: a guest can easily join before the host
         // has been registered by the UDP helper, and that used to kill the whole session.
         uint64_t m_signaling_retry_ms = 0;
+        // Discovery is done and we are waiting for the signaling helper to answer a keepalive
+        // until this time (0 = not waiting); m_address_seen once it has.
+        uint64_t m_address_deadline_ms = 0;
+        bool m_address_seen = false;
 
         void* m_log_ctx = nullptr;
         void (*m_log)(void* ctx, const char* msg) = nullptr;

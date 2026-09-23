@@ -115,7 +115,7 @@ namespace yampnet
         }
 
         CertFingerprint pin;
-        if (fingerprint_hex && *fingerprint_hex && !pin.FromHex(fingerprint_hex))
+        if (!ResolveServerPin(server, fingerprint_hex, &pin))
         {
             Fail("bad certificate fingerprint");
             return false;
