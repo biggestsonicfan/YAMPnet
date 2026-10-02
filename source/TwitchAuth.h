@@ -30,12 +30,12 @@
 //
 // NONE of the Twitch error codes close the connection, deliberately, so a server that refuses
 // this leaves a player who can still log in with a password. The one case that DOES close it is a
-// server too old to know command 63 at all: it answers Malformed and hangs up. That is why a
+// server too old to know the command at all: it answers Malformed and hangs up. That is why a
 // disconnect while Starting is read as Unsupported rather than as a failure - "this server has no
 // Twitch login" is not an error a player can act on, it is a button that should not be offered.
-// A third server stays connected and answers Invalid(2): one whose CommandType HAS a 63, but a
+// A third server stays connected and answers Invalid(2): one whose CommandType HAS that id, but a
 // different command that an unauthentified client may not send. That is the official server,
-// np.rpcs3.net (seen 2026-09-23). A server with Twitch never answers the start with Invalid.
+// np.rpcs3.net (seen 2026-09-23, asking 63 on protocol 30). A server with Twitch never answers the start with Invalid.
 
 #include <stdint.h>
 
@@ -113,6 +113,7 @@ namespace yampnet
         uint64_t m_reply_deadline_ms = 0;   // that request must be answered by then
         uint64_t m_flow_deadline_ms = 0;    // the whole device code expires then
         uint64_t m_next_poll_ms = 0;
+        bool m_start_sent = false;          // the start went out (it waits for the greeting)
         uint32_t m_interval_s = 5;          // as the server gave it, widened on TwitchAuthSlowDown
         // Signing in to np.rpcs3.net, which has no Twitch sign-in. It is still ASKED rather than
         // refused here, so the day it gains one needs no new plugin; this only lets the refusal

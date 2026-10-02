@@ -105,6 +105,7 @@ namespace yampnet
         m_reply_deadline_ms = 0;
         m_flow_deadline_ms = 0;
         m_next_poll_ms = 0;
+        m_start_sent = false;
         m_interval_s = kDefaultIntervalS;
         m_official = false;
         m_error[0] = '\0';
@@ -142,13 +143,8 @@ namespace yampnet
             return false;
         }
 
-        m_pending = m_client.TwitchDeviceStart();
-        if (m_pending == 0)
-        {
-            Finish(State::Failed, "%s", m_client.LastError());
-            return false;
-        }
-
+        // The start goes out from Update() once the greeting has said which ids this server uses
+        // for it; the reply deadline below covers the wait for the greeting as well.
         m_state = State::Starting;
         m_reply_deadline_ms = GetTickCount64() + kStartTimeoutMs;
         return true;
@@ -165,14 +161,14 @@ namespace yampnet
             Finish(State::Unsupported, "this server does not offer Twitch sign-in");
             return;
         }
-        // An RPCN from before the feature does not know command 63 at all and rejects it as
+        // An RPCN from before the feature does not know the command at all and rejects it as
         // Malformed (then hangs up, which Update() catches as the same answer).
         if (pkt.error == RpcnError::Malformed)
         {
             Finish(State::Unsupported, "this server is too old to know about Twitch sign-in");
             return;
         }
-        // A server whose command 63 is something else, which a client that has not logged in may
+        // A server where that id is some other command, which a client that has not logged in may
         // not send. twitch_device_start never answers Invalid, so this is not a Twitch refusal.
         if (pkt.error == RpcnError::Invalid)
         {
@@ -283,10 +279,9 @@ namespace yampnet
             if (m_pending != 0 && pkt.packet_id != m_pending)
                 continue;
 
-            const RpcnCommand cmd = static_cast<RpcnCommand>(pkt.command);
-            if (m_state == State::Starting && cmd == RpcnCommand::TwitchDeviceStart)
+            if (m_state == State::Starting && pkt.command == m_client.TwitchCommand(false))
                 OnStartReply(pkt);
-            else if (m_state == State::Waiting && cmd == RpcnCommand::TwitchDevicePoll)
+            else if (m_state == State::Waiting && pkt.command == m_client.TwitchCommand(true))
                 OnPollReply(pkt);
             else
                 continue;
@@ -300,7 +295,7 @@ namespace yampnet
 
         if (!m_client.IsConnected())
         {
-            // A server that does not know command 63 answers Malformed and HANGS UP, so a
+            // A server that does not know the command answers Malformed and HANGS UP, so a
             // connection that dropped while the device code was in flight is not a network fault
             // - it is TwitchDisabled's answer, arrived at by an older server.
             if (m_state == State::Starting)
@@ -314,6 +309,16 @@ namespace yampnet
 
         if (m_state == State::Starting)
         {
+            if (!m_start_sent && m_client.ServerVersion() != 0)
+            {
+                m_pending = m_client.TwitchDeviceStart();
+                if (m_pending == 0)
+                {
+                    Finish(State::Failed, "%s", m_client.LastError());
+                    return;
+                }
+                m_start_sent = true;
+            }
             if (m_reply_deadline_ms != 0 && now > m_reply_deadline_ms)
                 Finish(State::Failed, "the server did not answer within %u seconds",
                        static_cast<unsigned>(kStartTimeoutMs / 1000));
