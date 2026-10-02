@@ -73,6 +73,7 @@ namespace yampnet
 
         m_signaling_addr = 0;
         m_user_id = 0;
+        m_server_version = 0;
 
         if (!m_tls.Connect(host, port ? port : kRpcnDefaultPort, pinned))
             return false;
@@ -267,7 +268,15 @@ namespace yampnet
     uint64_t RpcnClient::TwitchDeviceStart()
     {
         // No payload at all: the server needs nothing from us to ask Twitch for a device code.
-        return Request(RpcnCommand::TwitchDeviceStart, nullptr, 0);
+        return Request(static_cast<RpcnCommand>(TwitchCommand(false)), nullptr, 0);
+    }
+
+    uint16_t RpcnClient::TwitchCommand(bool poll) const
+    {
+        if (m_server_version >= kRpcnTwitchProtocol)
+            return static_cast<uint16_t>(poll ? RpcnCommand::TwitchDevicePoll
+                                              : RpcnCommand::TwitchDeviceStart);
+        return poll ? kRpcnTwitchLegacyPoll : kRpcnTwitchLegacyStart;
     }
 
     uint64_t RpcnClient::TwitchDevicePoll(const char* flow_id)
@@ -287,7 +296,7 @@ namespace yampnet
             Fail("TwitchDevicePoll: flow id too long");
             return 0;
         }
-        return Request(RpcnCommand::TwitchDevicePoll, p.buf, p.n);
+        return Request(static_cast<RpcnCommand>(TwitchCommand(true)), p.buf, p.n);
     }
 
     namespace
@@ -1024,6 +1033,10 @@ namespace yampnet
                         out->payload = m_in + kRpcnHeaderSize;
                         out->payload_size = size - kRpcnHeaderSize;
                     }
+
+                    // ServerInfo: u32 LE protocol version.
+                    if (out->type == 3 && out->payload_size >= 4)
+                        m_server_version = GetU32(out->payload);
 
                     // Snoop our own Login reply for the user_id. Doing it here means callers
                     // never have to remember to parse it, and signaling just works after login.

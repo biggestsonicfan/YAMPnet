@@ -45,9 +45,17 @@ namespace yampnet
         // The Twitch OAuth device flow. Unauthentified like Login and Create, and NOT gated
         // behind a protocol version bump on the server, so the only way to learn whether a
         // server has them is to ask - see TwitchAuth.h for what the two answers look like.
-        TwitchDeviceStart = 63,
-        TwitchDevicePoll = 64,
+        // Protocol 32 gave 63/64 to RPCS3's UnlockTrophy/SyncTrophies, so these moved to
+        // 0xF0/0xF1, a block upstream's numbering won't reach. A server older than that knows them
+        // only as 63/64 (kRpcnTwitchLegacy*); RpcnClient::TwitchCommand picks by the greeting.
+        TwitchDeviceStart = 0xF0,
+        TwitchDevicePoll = 0xF1,
     };
+
+    // The protocol version from which the Twitch commands are 0xF0/0xF1, and their ids below it.
+    inline constexpr uint32_t kRpcnTwitchProtocol = 32;
+    inline constexpr uint16_t kRpcnTwitchLegacyStart = 63;
+    inline constexpr uint16_t kRpcnTwitchLegacyPoll = 64;
 
     // Values match the server's ErrorType enum exactly (declaration order). The whole enum is
     // spelled out rather than the handful this client can meet, because the numbers are what a log
@@ -203,12 +211,17 @@ namespace yampnet
         // No payload. The reply is a device code to show the player - or TwitchDisabled(34) on
         // a server without the feature configured, Malformed(1) and a hang-up on one too old to
         // know the command at all, or Invalid(2) on one where 63 is some other command (the
-        // official np.rpcs3.net).
+        // official np.rpcs3.net, asked on protocol 30).
+        //
+        // Its id depends on the server's protocol version, so send it only once ServerVersion()
+        // is known - i.e. after Poll() has handed out the greeting.
         uint64_t TwitchDeviceStart();
         // One string: the opaque flow id from the start reply. The device code itself never
         // leaves the server. Answers TwitchAuthPending(35) until the player has finished in
         // the browser.
         uint64_t TwitchDevicePoll(const char* flow_id);
+        // The id this server knows the Twitch start (or poll) by - also what its reply carries.
+        uint16_t TwitchCommand(bool poll) const;
 
         struct TwitchDeviceCode
         {
@@ -340,6 +353,10 @@ namespace yampnet
         // needs it, so nothing UDP works before Login has been polled.
         int64_t UserId() const { return m_user_id; }
 
+        // The protocol version from the server's ServerInfo greeting (packet type 3), the first
+        // packet on every connection; also captured inside Poll(). 0 until it has been read.
+        uint32_t ServerVersion() const { return m_server_version; }
+
         // --- UDP signaling ------------------------------------------------------------------
         // Opens the local P2P socket (bound to kRpcnP2PPort) used both for signaling keepalives
         // and, later, for game traffic.
@@ -402,6 +419,7 @@ namespace yampnet
         // address is resolved once at Connect() and reused for every keepalive.
         uint32_t m_signaling_addr = 0;   // in_addr, network byte order
         int64_t m_user_id = 0;
+        uint32_t m_server_version = 0;
         char m_error[256] = {};
     };
 }
